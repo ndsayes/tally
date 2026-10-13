@@ -1,0 +1,51 @@
+// Offline support: always try the network first (so updates show up straight away),
+// and fall back to the last cached copy when there's no connection.
+const CACHE = 'tally-v1';
+const SHELL = [
+  './',
+  'index.html',
+  'app.css',
+  'manifest.webmanifest',
+  'js/app.js',
+  'js/db.js',
+  'js/nutrition.js',
+  'js/off.js',
+  'js/ai.js',
+  'js/images.js',
+  'js/scanner.js',
+  'vendor/anthropic-sdk.js',
+  'vendor/barcode-detector.js',
+  'vendor/zxing_reader.wasm',
+  'icons/icon-192.png',
+  'icons/apple-touch-icon.png',
+];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches
+      .keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim()),
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  // Only handle this app's own files; Claude and Open Food Facts requests go straight out.
+  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  event.respondWith(
+    fetch(req)
+      .then((res) => {
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(req, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(req, { ignoreSearch: true }).then((r) => r || caches.match('index.html'))),
+  );
+});
