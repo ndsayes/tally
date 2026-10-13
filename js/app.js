@@ -49,6 +49,9 @@ const mealSelect = (meal) =>
   `<label class="field"><span>Meal</span><select name="meal">${MEALS.map(
     (m) => `<option value="${m}" ${m === meal ? 'selected' : ''}>${MEAL_NAMES[m]}</option>`,
   ).join('')}</select></label>`;
+// Meal and date side by side, so food can go to (or be moved to) any day.
+const mealDateFields = (meal, date) =>
+  `<div class="two">${mealSelect(meal)}<label class="field"><span>Date</span><input name="date" type="date" value="${esc(date || state.date)}"></label></div>`;
 const val = (root, name) => $(`[name="${name}"]`, root).value.trim();
 const numVal = (root, name) => {
   const v = parseFloat(val(root, name));
@@ -186,6 +189,16 @@ const openDay = (date) => {
   state.date = date;
   return showView('diary');
 };
+
+const dateVal = (root) => val(root, 'date') || state.date;
+
+// "today", "yesterday" or "Tue, Oct 13", for messages like "Moved to yesterday".
+function dayPhrase(date) {
+  const label = dateLabel(date);
+  return ['Today', 'Yesterday', 'Tomorrow'].includes(label) ? label.toLowerCase() : label;
+}
+const addedMsg = (what, date) => `Added ${what}${date === state.date ? '' : ` to ${dayPhrase(date)}`}`;
+const savedMsg = (oldDate, date) => (date === oldDate ? 'Saved' : `Moved to ${dayPhrase(date)}`);
 
 async function afterLog(msg) {
   closeSheet();
@@ -725,7 +738,7 @@ function amountScreen(food, meal, entry = null) {
             : ''
         }
         <div class="preview"></div>
-        ${mealSelect(meal)}
+        ${mealDateFields(meal, entry?.date)}
         <button class="btn primary save">${entry ? 'Save' : 'Add'}</button>
         ${entry ? '<button class="btn danger-outline del">Delete entry</button>' : ''}
         <button class="link fav-toggle"></button>
@@ -761,11 +774,12 @@ function amountScreen(food, meal, entry = null) {
 
       $('.save', body).onclick = async () => {
         if (!(qty > 0)) return toast('Enter an amount');
-        const data = foodEntry(food, qty, unitKey, val(body, 'meal'));
+        const date = dateVal(body);
+        const data = { ...foodEntry(food, qty, unitKey, val(body, 'meal')), date };
         if (entry) await db.put('entries', { ...entry, ...data });
         else await addEntry(data);
         await touchFood(food, qty, unitKey);
-        afterLog(entry ? 'Saved' : `Added ${food.name}`);
+        afterLog(entry ? savedMsg(entry.date, date) : addedMsg(food.name, date));
       };
       $('.del', body)?.addEventListener('click', async () => {
         if (!confirm('Delete this entry?')) return;
@@ -1127,20 +1141,32 @@ function toRow(it) {
     if (!(qty > 0)) qty = 1;
     return { kind: 'food', food, qty: round2(qty), unitKey };
   }
+  // Estimates are kept per single unit (e.g. 1 slice) and multiplied by the quantity, so
+  // "2 slices" can be changed to 3 without retyping the numbers.
+  const unit = String(it.unit || '').trim().toLowerCase();
+  const byWeight = !(it.quantity > 0) || !unit || /^(g|grams?|ml|millilit(er|re)s?|oz|ounces?|lbs?|pounds?)$/.test(unit);
+  const qty = byWeight ? 1 : round2(it.quantity);
   return {
     kind: 'est',
     name: it.name,
-    grams: Math.round(it.grams || 0),
-    kcal: Math.round(it.kcal || 0),
-    protein: round1(it.protein),
-    carbs: round1(it.carbs),
-    fat: round1(it.fat),
+    qty,
+    unit: byWeight ? 'portion' : unit,
+    unitGrams: it.grams > 0 ? Math.round(it.grams / qty) : 0,
+    kcal: Math.round((it.kcal || 0) / qty),
+    protein: round1((it.protein || 0) / qty),
+    carbs: round1((it.carbs || 0) / qty),
+    fat: round1((it.fat || 0) / qty),
     confidence: it.confidence,
     save: false,
   };
 }
 
-const rowNutrition = (r) => (r.kind === 'food' ? scale(r.food, r.qty, r.unitKey) : r);
+function rowNutrition(r) {
+  if (r.kind === 'food') return scale(r.food, r.qty, r.unitKey);
+  return { kcal: Math.round(r.kcal * r.qty), protein: round1(r.protein * r.qty), carbs: round1(r.carbs * r.qty), fat: round1(r.fat * r.qty) };
+}
+
+const estAmount = (r) => `${round2(r.qty)} × ${r.unit}${r.unitGrams ? ` (${fmt(r.unitGrams)} g)` : ''}`;
 
 function reviewScreen(result, meal) {
   const rows = (result.items || []).map(toRow);
@@ -1172,7 +1198,11 @@ function reviewScreen(result, meal) {
           <div class="ri-head"><input class="name" value="${esc(r.name)}" aria-label="Name"><span class="badge">${
             r.confidence === 'low' ? 'Rough guess' : r.confidence === 'high' ? 'Known values' : 'Estimate'
           }</span><button class="rm" data-rm="${i}" aria-label="Remove">×</button></div>
-          ${r.grams ? `<div class="muted small">About ${fmt(r.grams)} g</div>` : ''}
+          <div class="amount-row">
+            <input class="qty" type="number" inputmode="decimal" step="any" min="0" value="${r.qty}" aria-label="How many">
+            <span class="unit-label">× ${esc(r.unit)}${r.unitGrams ? ` <span class="muted">· about ${fmt(r.unitGrams)} g each</span>` : ''}</span>
+          </div>
+          <div class="group-label">Per ${esc(r.unit)}</div>
           <div class="four">
             ${['kcal', 'protein', 'carbs', 'fat']
               .map(
@@ -1181,6 +1211,7 @@ function reviewScreen(result, meal) {
               )
               .join('')}
           </div>
+          <div class="muted small numbers"></div>
           <label class="check"><input type="checkbox" class="save" ${r.save ? 'checked' : ''}> Save to My Foods</label></div>`;
       };
 
@@ -1199,7 +1230,7 @@ function reviewScreen(result, meal) {
           <label class="check"><input type="checkbox" class="combo" ${combo ? 'checked' : ''}> Save as a favorite, to log it in one tap next time</label>
           <input class="combo-name" type="text" autocomplete="off" placeholder="Name it, e.g. Post-workout shake" value="${esc(comboName)}" ${combo ? '' : 'hidden'}>
         </div>
-        ${mealSelect(meal)}
+        ${mealDateFields(meal)}
         <button class="btn primary add">Add to diary</button>`;
 
       const comboBox = $('.combo', body);
@@ -1215,7 +1246,7 @@ function reviewScreen(result, meal) {
       const update = () => {
         $$('.review-item', body).forEach((el) => {
           const r = rows[el.dataset.i];
-          if (r.kind === 'food') $('.numbers', el).textContent = macroLine(rowNutrition(r));
+          $('.numbers', el).textContent = r.kind === 'food' || r.qty !== 1 ? `${r.kind === 'est' ? 'Total: ' : ''}${macroLine(rowNutrition(r))}` : '';
         });
         const total = rows.reduce(
           (t, r) => {
@@ -1258,7 +1289,7 @@ function reviewScreen(result, meal) {
         saveFood({
           name: r.name || 'Food',
           brand: '',
-          per: { label: '1 portion', grams: r.grams || null },
+          per: { label: `1 ${r.unit}`, grams: r.unitGrams || null },
           kcal: Math.round(r.kcal),
           protein: round1(r.protein),
           carbs: round1(r.carbs),
@@ -1269,13 +1300,14 @@ function reviewScreen(result, meal) {
 
       $('.add', body).onclick = async () => {
         const mealSel = val(body, 'meal');
+        const date = dateVal(body);
 
         if (combo) {
           // Save the whole meal as one favorite and log it as a single entry.
           const name = comboName.trim();
           if (!name) return toast('Give your favorite a name');
           const parts = rows
-            .filter((r) => r.kind === 'est' || r.qty > 0)
+            .filter((r) => r.qty > 0)
             .map((r) =>
               r.kind === 'food'
                 ? {
@@ -1287,45 +1319,40 @@ function reviewScreen(result, meal) {
                   }
                 : {
                     name: r.name || 'Food',
-                    amount: r.grams ? `≈ ${fmt(r.grams)} g` : '',
-                    grams: r.grams || null,
-                    kcal: r.kcal,
-                    protein: r.protein,
-                    carbs: r.carbs,
-                    fat: r.fat,
+                    amount: estAmount(r),
+                    grams: r.unitGrams ? r.unitGrams * r.qty : null,
+                    ...rowNutrition(r),
                     estimate: r.confidence !== 'high',
                   },
             );
           for (const r of rows) if (r.kind === 'est' && r.save) await estFood(r);
           const fav = await saveFavoriteMeal(name, parts);
-          await addEntry(foodEntry(fav, 1, 'per', mealSel));
+          await addEntry({ ...foodEntry(fav, 1, 'per', mealSel), date });
           await touchFood(fav, 1, 'per');
-          return afterLog(`Added "${name}" and saved it to favorites`);
+          return afterLog(`${addedMsg(`"${name}"`, date)} and saved it to favorites`);
         }
 
         for (const r of rows) {
+          if (!(r.qty > 0)) continue;
           if (r.kind === 'food') {
-            if (!(r.qty > 0)) continue;
-            await addEntry(foodEntry(r.food, r.qty, r.unitKey, mealSel));
+            await addEntry({ ...foodEntry(r.food, r.qty, r.unitKey, mealSel), date });
             await touchFood(r.food, r.qty, r.unitKey);
           } else if (r.save) {
             const food = await estFood(r);
-            await addEntry({ ...foodEntry(food, 1, 'per', mealSel), estimate: r.confidence !== 'high' });
-            await touchFood(food, 1, 'per');
+            await addEntry({ ...foodEntry(food, r.qty, 'per', mealSel), date, estimate: r.confidence !== 'high' });
+            await touchFood(food, r.qty, 'per');
           } else {
             await addEntry({
               meal: mealSel,
+              date,
               name: r.name || 'Food',
-              amount: r.grams ? `≈ ${fmt(r.grams)} g` : '',
-              kcal: Math.round(r.kcal),
-              protein: round1(r.protein),
-              carbs: round1(r.carbs),
-              fat: round1(r.fat),
+              amount: estAmount(r),
+              ...rowNutrition(r),
               estimate: r.confidence !== 'high',
             });
           }
         }
-        afterLog(`Added ${rows.length} item${rows.length === 1 ? '' : 's'}`);
+        afterLog(addedMsg(`${rows.length} item${rows.length === 1 ? '' : 's'}`, date));
       };
     },
   };
@@ -1352,13 +1379,14 @@ function quickAddScreen(meal) {
       body.innerHTML = `
         ${textField('name', 'Name (optional)', '', 'placeholder="Quick add" autocomplete="off"')}
         ${nutritionFields()}
-        ${mealSelect(meal)}
+        ${mealDateFields(meal)}
         <button class="btn primary save">Add</button>`;
       $('[name="kcal"]', body).focus();
       $('.save', body).onclick = async () => {
         if (val(body, 'kcal') === '') return toast('Enter the calories');
-        await addEntry({ meal: val(body, 'meal'), name: val(body, 'name') || 'Quick add', amount: '', ...readNutrition(body) });
-        afterLog('Added');
+        const date = dateVal(body);
+        await addEntry({ meal: val(body, 'meal'), date, name: val(body, 'name') || 'Quick add', amount: '', ...readNutrition(body) });
+        afterLog(addedMsg('it', date));
       };
     },
   };
@@ -1372,18 +1400,20 @@ function entryEditor(entry) {
         ${textField('name', 'Name', entry.name, 'autocomplete="off"')}
         ${textField('amount', 'Amount (note)', entry.amount, 'autocomplete="off"')}
         ${nutritionFields(entry)}
-        ${mealSelect(entry.meal)}
+        ${mealDateFields(entry.meal, entry.date)}
         <button class="btn primary save">Save</button>
         <button class="btn danger-outline del">Delete entry</button>`;
       $('.save', body).onclick = async () => {
+        const date = dateVal(body);
         await db.put('entries', {
           ...entry,
           name: val(body, 'name') || entry.name,
           amount: val(body, 'amount'),
           meal: val(body, 'meal'),
+          date,
           ...readNutrition(body),
         });
-        afterLog('Saved');
+        afterLog(savedMsg(entry.date, date));
       };
       $('.del', body).onclick = async () => {
         if (!confirm('Delete this entry?')) return;

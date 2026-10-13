@@ -73,7 +73,7 @@ The user's saved foods are listed with an id, their nutrition for a reference am
 - per = the reference amount, g = grams, package = the whole package.
 Foods marked [favorite] are meals the user has regularly; phrases like "my usual breakfast", "my shake" or "the yogurt bowl" usually mean one of them, and one favorite is a single item (don't split it into its ingredients).
 When an item clearly refers to a saved food, set matched_food_id to its id and express the amount as quantity + unit, where unit is "per", "g" or "package" (only units listed for that food). Fractions like "half the tray" mean quantity 0.5 with unit "package". Also fill grams with your best estimate of the weight eaten (0 if unknowable).
-Otherwise set matched_food_id to "" and estimate a typical portion in grams if no amount is given. For branded or restaurant items, use their typical published nutrition values.
+Otherwise set matched_food_id to "" and describe the amount as a count of natural units: quantity = how many, unit = the single unit in singular form. "Two slices of pizza" is quantity 2, unit "slice" (one item, not two); "a burger" is 1 "burger"; "3 eggs" is 3 "egg". If the user gives a weight or volume, or there's no natural unit, use quantity 1 and unit "portion". Fill grams with the estimated total weight (estimate a typical portion if no amount is given). For branded or restaurant items, use their typical published nutrition values.
 
 Always fill kcal, protein, carbs and fat (in grams) for the amount eaten; for saved foods, calculate them from the saved nutrition.
 confidence: "high" = saved food or exact amount of a well-known food; "medium" = common food with a clear amount; "low" = portion or recipe guessed.
