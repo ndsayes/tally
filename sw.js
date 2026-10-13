@@ -1,6 +1,7 @@
 // Offline support: always try the network first (so updates show up straight away),
 // and fall back to the last cached copy when there's no connection.
-const CACHE = 'tally-v6';
+// Change this on every release: it's how installed copies notice there's an update.
+const CACHE = 'tally-v10';
 const SHELL = [
   './',
   'index.html',
@@ -22,7 +23,13 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache: 'reload' skips the browser's own cache, so the new version stores the new files.
+  event.waitUntil(
+    caches
+      .open(CACHE)
+      .then((c) => c.addAll(SHELL.map((url) => new Request(url, { cache: 'reload' }))))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', (event) => {

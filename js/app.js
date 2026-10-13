@@ -38,6 +38,7 @@ const ICONS = {
   label: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>',
   chat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H10l-5 4v-4H4z"/></svg>',
   camera: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
+  calendar: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>',
 };
 
 const numField = (name, label, value, attrs = '') =>
@@ -350,9 +351,12 @@ async function renderDashboard() {
   $('#dashboard').innerHTML = `
     ${bannerHtml()}
     <div class="dash-head">
-      <select class="range-pick" aria-label="Period">${Object.entries(RANGES)
-        .map(([k, v]) => `<option value="${k}" ${k === state.range ? 'selected' : ''}>${v}</option>`)
-        .join('')}</select>
+      <div class="dash-left">
+        <select class="range-pick" aria-label="Period">${Object.entries(RANGES)
+          .map(([k, v]) => `<option value="${k}" ${k === state.range ? 'selected' : ''}>${v}</option>`)
+          .join('')}</select>
+        <button class="cal-btn" data-act="calendar" aria-label="Calendar">${ICONS.calendar}</button>
+      </div>
       <span class="muted small">${span}</span>
     </div>
 
@@ -361,9 +365,11 @@ async function renderDashboard() {
     </section>
 
     <section class="card today-card">
-      <h3 class="card-title">Today</h3>
+      <div class="card-head">
+        <h3 class="card-title">Today</h3>
+        <button class="circle-add" data-act="open-today" aria-label="Log food">+</button>
+      </div>
       ${summaryHtml(sumEntries(state.entries), g)}
-      <button class="btn primary log-btn" data-act="open-today">Log food</button>
     </section>
 
     <section class="card">
@@ -381,8 +387,76 @@ $('#dashboard').addEventListener('click', (ev) => {
   const day = ev.target.closest('[data-day]');
   if (day) return openDay(day.dataset.day);
   if (ev.target.closest('[data-act="open-today"]')) return openDay(todayStr());
+  if (ev.target.closest('[data-act="calendar"]')) return openSheet(calendarScreen());
   if (ev.target.closest('[data-act="settings"]')) openSheet(settingsScreen());
 });
+
+// Month calendar: every day coloured like the week strip; tap a day to open its log.
+function calendarScreen() {
+  const now = new Date();
+  const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  let month = thisMonth;
+  const self = {
+    title: 'Calendar',
+    async render(body) {
+      const y = month.getFullYear();
+      const m = month.getMonth();
+      const first = todayStr(new Date(y, m, 1));
+      const last = todayStr(new Date(y, m + 1, 0));
+      const today = todayStr();
+      const g = state.settings.goals;
+      const entries = await db.byRange('entries', 'date', first, last);
+      if (!body.isConnected) return; // moved on while loading
+
+      const days = [];
+      for (let d = first; d <= last; d = shiftDate(d, 1)) days.push(d);
+      const totals = Object.fromEntries(days.map((d) => [d, sumEntries(entries.filter((e) => e.date === d))]));
+      const blanks = (new Date(y, m, 1).getDay() + 6) % 7; // weeks start on Monday
+      const done = days.filter((d) => d < today && totals[d].kcal > 0);
+      const onTarget = done.filter((d) => dayStatus(totals[d].kcal, g.kcal) === 'green').length;
+
+      const cells = days
+        .map((d) => {
+          const future = d > today;
+          const status = future ? 'future' : dayStatus(totals[d].kcal, g.kcal, d === today);
+          const pct = totals[d].kcal && g.kcal ? Math.round((totals[d].kcal / g.kcal) * 100) : null;
+          const label = `${toDate(d).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}: ${
+            pct != null ? `${pct}% of calorie goal` : future ? 'upcoming' : 'nothing logged'
+          }`;
+          return `<button class="cal-day s-${status} ${d === today ? 'is-today' : ''}" data-day="${d}" ${future ? 'disabled' : ''} aria-label="${esc(label)}"><span class="dot">${toDate(d).getDate()}</span></button>`;
+        })
+        .join('');
+
+      body.innerHTML = `
+        <div class="cal-head">
+          <button class="icon-btn cal-prev" aria-label="Previous month">‹</button>
+          <h3>${month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</h3>
+          <button class="icon-btn cal-next" aria-label="Next month" ${month >= thisMonth ? 'disabled' : ''}>›</button>
+        </div>
+        <div class="cal-grid">
+          ${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((w) => `<span class="cal-dow">${w}</span>`).join('')}
+          ${'<span></span>'.repeat(blanks)}${cells}
+        </div>
+        <p class="muted small cal-summary">${done.length ? `${onTarget} of ${done.length} logged days on target` : 'Nothing logged this month yet'}</p>`;
+
+      $('.cal-prev', body).onclick = () => {
+        month = new Date(y, m - 1, 1);
+        showScreen();
+      };
+      $('.cal-next', body).onclick = () => {
+        month = new Date(y, m + 1, 1);
+        showScreen();
+      };
+      body.addEventListener('click', (ev) => {
+        const day = ev.target.closest('[data-day]');
+        if (!day) return;
+        closeSheet();
+        openDay(day.dataset.day);
+      });
+    },
+  };
+  return self;
+}
 $('#dashboard').addEventListener('change', (ev) => {
   if (!ev.target.classList.contains('range-pick')) return;
   state.range = ev.target.value;
@@ -477,9 +551,34 @@ function closeSheet() {
     if (!stack.length) {
       sheetEl.hidden = true;
       sheetBody.innerHTML = '';
+      if (updateWaiting) location.reload();
     }
   }, 250);
 }
+
+// ---------- app updates ----------
+// A home-screen app is resumed rather than reloaded, so look for a new version every time it's
+// opened. When one is installed, reload — but never while something is being logged.
+
+let swRegistration = null;
+let updateWaiting = false;
+
+async function setupUpdates() {
+  if (!('serviceWorker' in navigator) || !isSecureContext) return;
+  let controlled = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!controlled) return (controlled = true); // first install, nothing to refresh
+    if (stack.length) updateWaiting = true;
+    else location.reload();
+  });
+  try {
+    swRegistration = await navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' });
+  } catch {
+    // offline support is optional
+  }
+}
+
+const checkForUpdate = () => swRegistration?.update().catch(() => {});
 
 $('#sheetBack').onclick = back;
 sheetEl.addEventListener('click', (ev) => {
@@ -1417,6 +1516,25 @@ function bindCloudSection(body, self) {
   });
 }
 
+// ---------- Appearance ----------
+// Stored on this phone only (not in backups). index.html applies it before the page draws.
+
+const THEMES = { system: 'Match phone', light: 'Light', dark: 'Dark' };
+const currentTheme = () => {
+  const t = readPref('tally-theme', 'system');
+  return THEMES[t] ? t : 'system';
+};
+
+function applyTheme(theme) {
+  const root = document.documentElement;
+  if (theme === 'light' || theme === 'dark') root.dataset.theme = theme;
+  else delete root.dataset.theme;
+  // Status bar colour: one tag is used in light mode, the other in dark mode.
+  const [lightTag, darkTag] = $$('meta[name="theme-color"]');
+  if (lightTag) lightTag.content = theme === 'dark' ? '#000000' : '#f2f2f7';
+  if (darkTag) darkTag.content = theme === 'light' ? '#f2f2f7' : '#000000';
+}
+
 function settingsScreen() {
   const self = {
     title: 'Settings',
@@ -1441,6 +1559,11 @@ function settingsScreen() {
         <label class="field"><span>Home city (helps find restaurants you mention)</span><input name="home" type="text" autocomplete="off" placeholder="e.g. Toronto, Ontario" value="${esc(s.home || '')}"></label>
 
         <button class="btn primary save">Save settings</button>
+
+        <h4 class="section-label">Appearance</h4>
+        <div class="segmented" role="group" aria-label="Appearance">${Object.entries(THEMES)
+          .map(([k, v]) => `<button data-theme="${k}" aria-pressed="${k === currentTheme()}">${v}</button>`)
+          .join('')}</div>
 
         ${cloudSection()}
 
@@ -1502,6 +1625,13 @@ function settingsScreen() {
       };
 
       bindCloudSection(body, self);
+      $$('[data-theme]', body).forEach((btn) =>
+        btn.addEventListener('click', () => {
+          writePref('tally-theme', btn.dataset.theme);
+          applyTheme(btn.dataset.theme);
+          $$('[data-theme]', body).forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+        }),
+      );
       $('.export', body).onclick = exportBackup;
       $('.file-btn input', body).addEventListener('change', async (ev) => {
         const file = ev.target.files[0];
@@ -1587,6 +1717,7 @@ async function importBackup(file) {
 // ---------- start ----------
 
 async function init() {
+  applyTheme(currentTheme());
   await loadSettings();
   const range = readPref('tally-range', 'this-week');
   state.range = RANGES[range] ? range : 'this-week';
@@ -1597,13 +1728,14 @@ async function init() {
   await refreshToday();
   if (cloud.isDirty()) cloud.saveNow(); // changes left unsaved last time
   navigator.storage?.persist?.().catch(() => {});
-  if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
+  setupUpdates();
 
   window.addEventListener('pagehide', () => cloud.flush());
 
   document.addEventListener('visibilitychange', async () => {
     // Leaving the app: save any pending changes straight away.
     if (document.visibilityState === 'hidden') return cloud.flush();
+    checkForUpdate();
     // Reopening the app on a new day jumps to the new day.
     const t = todayStr();
     if (t === state.today) return;
