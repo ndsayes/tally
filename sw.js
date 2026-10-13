@@ -1,6 +1,6 @@
 // Offline support: always try the network first (so updates show up straight away),
 // and fall back to the last cached copy when there's no connection.
-const CACHE = 'tally-v4';
+const CACHE = 'tally-v6';
 const SHELL = [
   './',
   'index.html',
@@ -39,7 +39,8 @@ self.addEventListener('fetch', (event) => {
   // Only handle this app's own files; Claude and Open Food Facts requests go straight out.
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
   event.respondWith(
-    fetch(req)
+    // 'no-cache' asks the server whether the file changed, so an update never mixes old and new files.
+    fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' })
       .then((res) => {
         if (res.ok) {
           const copy = res.clone();

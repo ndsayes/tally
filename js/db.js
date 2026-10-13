@@ -44,6 +44,8 @@ export const db = {
   get: (store, key) => run(store, 'readonly', (s) => s.get(key)),
   all: (store) => run(store, 'readonly', (s) => s.getAll()),
   byIndex: (store, index, value) => run(store, 'readonly', (s) => s.index(index).getAll(value)),
+  byRange: (store, index, lower, upper) =>
+    run(store, 'readonly', (s) => s.index(index).getAll(IDBKeyRange.bound(lower, upper))),
   put: (store, value, key) => run(store, 'readwrite', (s) => s.put(value, key)),
   putMany: (store, values) =>
     run(store, 'readwrite', (s) => {

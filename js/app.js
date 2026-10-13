@@ -83,7 +83,7 @@ function toast(msg) {
 // ---------- state & storage ----------
 
 const DEFAULT_GOALS = { kcal: 2000, protein: 150, carbs: 200, fat: 67 };
-const state = { date: todayStr(), today: todayStr(), settings: null, entries: [], foods: [] };
+const state = { view: 'dashboard', date: todayStr(), today: todayStr(), settings: null, entries: [], foods: [], range: 'this-week' };
 
 async function loadSettings() {
   const saved = (await db.get('settings', 'main')) || {};
@@ -164,8 +164,27 @@ async function addEntry(entry) {
 
 async function refreshToday() {
   await loadDay();
-  renderToday();
+  await render();
 }
+
+// Redraws whichever main screen is showing: the week dashboard or a day's diary.
+function render() {
+  return state.view === 'dashboard' ? renderDashboard() : renderToday();
+}
+
+async function showView(view) {
+  state.view = view;
+  $('#dashBar').hidden = $('#dashboard').hidden = view !== 'dashboard';
+  $('#diaryBar').hidden = $('#today').hidden = view !== 'diary';
+  if (view === 'dashboard') state.date = todayStr(); // logging from the dashboard goes to today
+  window.scrollTo(0, 0);
+  await refreshToday();
+}
+
+const openDay = (date) => {
+  state.date = date;
+  return showView('diary');
+};
 
 async function afterLog(msg) {
   closeSheet();
@@ -215,28 +234,162 @@ async function saveMealAsFavorite(meal) {
   toast(`Saved "${name}" to favorites`);
 }
 
-function renderToday() {
-  $('#dateLabel').textContent = dateLabel(state.date);
-  const g = state.settings.goals;
-  const t = sumEntries(state.entries);
-  const left = Math.round(g.kcal - t.kcal);
-  const over = left < 0;
+function bannerHtml() {
   let banner = '';
   if (!state.settings.goalsSet) banner = 'Set your daily calorie and macro targets ›';
   else if (cloud.connected() && cloud.status.error) banner = `Backup to GitHub isn't working: ${cloud.status.error} ›`;
   else if (!cloud.connected()) banner = 'Turn on automatic backup so your diary is saved off this phone ›';
+  return banner ? `<button class="banner ${cloud.status.error ? 'warn' : ''}" data-act="settings">${esc(banner)}</button>` : '';
+}
+
+// Calories left/over, the calorie bar and the three macro bars.
+function summaryHtml(t, g) {
+  const left = Math.round(g.kcal - t.kcal);
+  const over = left < 0;
+  return `
+    <div class="kcal-row">
+      <div><div class="big ${over ? 'over' : ''}">${fmt(Math.abs(left))}</div><div class="muted">${over ? 'kcal over' : 'kcal left'}</div></div>
+      <div class="kcal-math muted"><div>${fmt(g.kcal)} goal</div><div>− ${fmt(t.kcal)} eaten</div></div>
+    </div>
+    ${bar(t.kcal, g.kcal, 'kcal')}
+    <div class="macros">${macro('Protein', 'protein', t, g)}${macro('Carbs', 'carbs', t, g)}${macro('Fat', 'fat', t, g)}</div>`;
+}
+
+function renderToday() {
+  $('#dateLabel').textContent = dateLabel(state.date);
   $('#today').innerHTML = `
-    ${banner ? `<button class="banner ${cloud.status.error ? 'warn' : ''}" data-act="settings">${esc(banner)}</button>` : ''}
-    <section class="card summary">
-      <div class="kcal-row">
-        <div><div class="big ${over ? 'over' : ''}">${fmt(Math.abs(left))}</div><div class="muted">${over ? 'kcal over' : 'kcal left'}</div></div>
-        <div class="kcal-math muted"><div>${fmt(g.kcal)} goal</div><div>− ${fmt(t.kcal)} eaten</div></div>
-      </div>
-      ${bar(t.kcal, g.kcal, 'kcal')}
-      <div class="macros">${macro('Protein', 'protein', t, g)}${macro('Carbs', 'carbs', t, g)}${macro('Fat', 'fat', t, g)}</div>
-    </section>
+    ${bannerHtml()}
+    <section class="card summary">${summaryHtml(sumEntries(state.entries), state.settings.goals)}</section>
     ${MEALS.map(mealCard).join('')}`;
 }
+
+// ---------- Week dashboard ----------
+
+const RANGES = { 'this-week': 'This week', 'last-week': 'Last week', 'last-7': 'Last 7 days' };
+
+function readPref(key, fallback) {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+function writePref(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // only a convenience
+  }
+}
+
+// The 7 dates (YYYY-MM-DD) in a range. Weeks run Monday to Sunday.
+function rangeDays(range) {
+  const today = todayStr();
+  let start;
+  if (range === 'last-7') start = shiftDate(today, -6);
+  else {
+    const [y, m, d] = today.split('-').map(Number);
+    const sinceMonday = (new Date(y, m - 1, d).getDay() + 6) % 7;
+    start = shiftDate(today, -sinceMonday - (range === 'last-week' ? 7 : 0));
+  }
+  return Array.from({ length: 7 }, (_, i) => shiftDate(start, i));
+}
+
+// How close a day's calories came to the goal. Going over counts the same as falling short.
+//   green: within 5% (target met) · yellow: 90%+ · orange: 75–89% · red: further off
+function dayStatus(kcal, goal, isToday = false) {
+  if (!kcal || !goal) return 'none';
+  const pct = kcal / goal;
+  if (isToday && pct < 0.95) return 'progress'; // today isn't over yet
+  const off = Math.abs(1 - pct);
+  if (off <= 0.05) return 'green';
+  if (off <= 0.1) return 'yellow';
+  if (off <= 0.25) return 'orange';
+  return 'red';
+}
+
+const toDate = (str) => {
+  const [y, m, d] = str.split('-').map(Number);
+  return new Date(y, m - 1, d);
+};
+
+async function renderDashboard() {
+  const g = state.settings.goals;
+  const today = todayStr();
+  const days = rangeDays(state.range);
+  const entries = await db.byRange('entries', 'date', days[0], days[6]);
+  const totals = Object.fromEntries(days.map((d) => [d, sumEntries(entries.filter((e) => e.date === d))]));
+
+  const cells = days
+    .map((d) => {
+      const t = totals[d];
+      const future = d > today;
+      const status = future ? 'future' : dayStatus(t.kcal, g.kcal, d === today);
+      const pct = t.kcal && g.kcal ? Math.round((t.kcal / g.kcal) * 100) : null;
+      const date = toDate(d);
+      const label = `${date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}: ${
+        pct != null ? `${pct}% of calorie goal` : future ? 'upcoming' : 'nothing logged'
+      }`;
+      return `<button class="day-cell s-${status} ${d === today ? 'is-today' : ''}" data-day="${d}" ${future ? 'disabled' : ''} aria-label="${esc(label)}">
+        <span class="dow">${date.toLocaleDateString(undefined, { weekday: 'narrow' })}</span>
+        <span class="dot">${pct != null ? `${pct}%` : future ? '' : '–'}</span>
+        <span class="dnum">${date.getDate()}</span></button>`;
+    })
+    .join('');
+
+  // Overview: finished days with something logged (today joins once it's over).
+  const done = days.filter((d) => d < today && totals[d].kcal > 0);
+  const onTarget = done.filter((d) => dayStatus(totals[d].kcal, g.kcal) === 'green').length;
+  const avgDays = done.length ? done : totals[today]?.kcal ? [today] : [];
+  const avg = Object.fromEntries(
+    ['kcal', 'protein', 'carbs', 'fat'].map((k) => [k, avgDays.length ? avgDays.reduce((s, d) => s + totals[d][k], 0) / avgDays.length : 0]),
+  );
+  const span = `${toDate(days[0]).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${toDate(days[6]).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+  const avgLabel = done.length ? `Daily average over ${done.length} logged day${done.length === 1 ? '' : 's'}` : avgDays.length ? 'Today so far' : 'Nothing logged yet';
+
+  $('#dashboard').innerHTML = `
+    ${bannerHtml()}
+    <div class="dash-head">
+      <select class="range-pick" aria-label="Period">${Object.entries(RANGES)
+        .map(([k, v]) => `<option value="${k}" ${k === state.range ? 'selected' : ''}>${v}</option>`)
+        .join('')}</select>
+      <span class="muted small">${span}</span>
+    </div>
+
+    <section class="card week">
+      <div class="week-strip">${cells}</div>
+    </section>
+
+    <section class="card today-card">
+      <h3 class="card-title">Today</h3>
+      ${summaryHtml(sumEntries(state.entries), g)}
+      <button class="btn primary log-btn" data-act="open-today">Log food</button>
+    </section>
+
+    <section class="card">
+      <h3 class="card-title">${RANGES[state.range]}</h3>
+      <div class="stats">
+        <div><div class="big2">${done.length ? `${onTarget}<span class="of">/${done.length}</span>` : '–'}</div><div class="muted small">days on target</div></div>
+        <div><div class="big2">${avgDays.length ? fmt(avg.kcal) : '–'}</div><div class="muted small">avg kcal a day (goal ${fmt(g.kcal)})</div></div>
+      </div>
+      <div class="muted small avg-label">${avgLabel}</div>
+      <div class="macros">${macro('Protein', 'protein', avg, g)}${macro('Carbs', 'carbs', avg, g)}${macro('Fat', 'fat', avg, g)}</div>
+    </section>`;
+}
+
+$('#dashboard').addEventListener('click', (ev) => {
+  const day = ev.target.closest('[data-day]');
+  if (day) return openDay(day.dataset.day);
+  if (ev.target.closest('[data-act="open-today"]')) return openDay(todayStr());
+  if (ev.target.closest('[data-act="settings"]')) openSheet(settingsScreen());
+});
+$('#dashboard').addEventListener('change', (ev) => {
+  if (!ev.target.classList.contains('range-pick')) return;
+  state.range = ev.target.value;
+  writePref('tally-range', state.range);
+  renderDashboard();
+});
+$('#toWeek').onclick = () => showView('dashboard');
 
 $('#today').addEventListener('click', (ev) => {
   const add = ev.target.closest('[data-add]');
@@ -260,7 +413,7 @@ $('#dateLabel').onclick = async () => {
   state.date = todayStr();
   await refreshToday();
 };
-$('#openSettings').onclick = () => openSheet(settingsScreen());
+$$('.settings-btn').forEach((b) => (b.onclick = () => openSheet(settingsScreen())));
 $('#fab').onclick = () => openSheet(addMenu(mealForNow()));
 
 function openEntry(id) {
@@ -1165,7 +1318,7 @@ function cloudStatusText() {
 }
 
 function onCloudStatus() {
-  renderToday();
+  render();
   const el = $('.cloud-status');
   if (el) {
     el.textContent = cloudStatusText();
@@ -1259,7 +1412,7 @@ function bindCloudSection(body, self) {
     state.settings.cloud = null;
     cloud.setConfig(null);
     await saveSettings();
-    renderToday();
+    render();
     if (isTop(self)) showScreen();
   });
 }
@@ -1343,7 +1496,7 @@ function settingsScreen() {
         s.home = val(body, 'home');
         s.goalsSet = true;
         await saveSettings();
-        renderToday();
+        render();
         toast('Settings saved');
         back();
       };
@@ -1435,6 +1588,8 @@ async function importBackup(file) {
 
 async function init() {
   await loadSettings();
+  const range = readPref('tally-range', 'this-week');
+  state.range = RANGES[range] ? range : 'this-week';
   cloud.init({ getData: buildBackup, onStatus: onCloudStatus });
   cloud.setConfig(state.settings.cloud);
   db.onWrite(() => cloud.scheduleSave());
@@ -1452,7 +1607,7 @@ async function init() {
     // Reopening the app on a new day jumps to the new day.
     const t = todayStr();
     if (t === state.today) return;
-    if (state.date === state.today) state.date = t;
+    if (state.date === state.today || state.view === 'dashboard') state.date = t;
     state.today = t;
     await refreshToday();
   });

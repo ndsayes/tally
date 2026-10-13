@@ -5,6 +5,11 @@ No server, no account, no subscription. Your diary is stored only on your phone.
 
 ## What it does
 
+- **Week dashboard** (the home screen): one coloured circle per day showing how close you
+  came to your calorie goal: green = met (within 5%), yellow = 90%+, orange = 75–89%,
+  red = further off (going over counts the same way). Switch between This week, Last week and
+  Last 7 days; see today's numbers with a **Log food** button, plus the period's days on
+  target and average calories and macros. Tap any day to open its log.
 - Daily calorie goal and protein / carbs / fat targets
 - Breakfast, Lunch, Dinner, Snacks
 - **Scan barcode**: looks the product up in Open Food Facts (free)
