@@ -173,7 +173,8 @@ main { padding: 0 16px; max-width: 640px; margin: 0 auto; }
 .check { display: flex; gap: 8px; align-items: center; font-size: 14px; margin-top: 4px; }
 .check input { width: 20px; height: 20px; accent-color: var(--accent); }
 .note { background: var(--accent-soft); border-radius: 12px; padding: 10px 12px; font-size: 14px; }
-.status.error { color: var(--danger); }
+.status.error, .error { color: var(--danger); }
+.banner.warn { background: color-mix(in srgb, var(--danger) 15%, var(--card)); }
 
 /* ---------- add menu ---------- */
 .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }

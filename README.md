@@ -44,12 +44,36 @@ The key is stored only on your phone and is sent only to Anthropic. With the def
 model (Claude Haiku 5.5: $0.10 per million input tokens, $0.50 per million output tokens)
 a label or photo log costs well under a tenth of a cent.
 
+## Automatic backup to GitHub
+
+Tally can save your diary to a **private** GitHub repository a few seconds after every
+change, so it survives a lost or new phone. Every save is a commit, so old versions are kept.
+
+1. On GitHub: **+** → **New repository** → name it `tally-data` → choose **Private** →
+   Create. (Keep it separate from the public `tally` app repository.)
+2. Create a token that can only touch that repository: profile photo → **Settings** →
+   **Developer settings** → **Personal access tokens** → **Fine-grained tokens** →
+   **Generate new token**.
+   - Name: `Tally backup`. Expiration: the longest option offered.
+   - Repository access: **Only select repositories** → `tally-data`.
+   - Permissions → Repository permissions → **Contents: Read and write**.
+   - Generate, then copy the token (it starts with `github_pat_`).
+3. In Tally: ⚙︎ → Automatic backup → repository `your-username/tally-data`, paste the
+   token → **Connect**.
+
+**New phone:** install Tally, then connect the same repository and a token. Your diary
+comes back automatically. **Expired token:** Tally shows a warning; make a new token and
+use Settings → **Replace token**.
+
+The token is stored only on your phone and never included in backups. Keep two-factor
+authentication on for your GitHub account.
+
 ## Good to know
 
-- **Back up now and then** (Settings → Export backup → save to Files). If you delete the
-  home-screen app, its data goes with it.
+- You can also save a backup file (Settings → Export backup → save to Files). If you
+  delete the home-screen app, its data on the phone goes with it.
 - Barcode data © Open Food Facts contributors, Open Database License.
 - Code layout: `js/app.js` (screens), `js/ai.js` (Claude prompts), `js/off.js` (barcode
-  lookup), `js/scanner.js` (camera), `js/db.js` (on-phone storage), `js/nutrition.js`
+  lookup), `js/scanner.js` (camera), `js/db.js` (on-phone storage), `js/cloud.js` (GitHub backup), `js/nutrition.js`
   (maths). Libraries are bundled in `vendor/` (Anthropic SDK 0.128.0, barcode-detector
   3.2.2 with ZXing WebAssembly).

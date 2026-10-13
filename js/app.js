@@ -6,6 +6,7 @@ import { lookupBarcode, sameBarcode } from './off.js';
 import { readLabel, parseMeal, testKey, MODELS, DEFAULT_MODEL } from './ai.js';
 import { prepImage } from './images.js';
 import { createScanner, cameraErrorText } from './scanner.js';
+import * as cloud from './cloud.js';
 
 // ---------- helpers ----------
 
@@ -180,8 +181,12 @@ function renderToday() {
   const t = sumEntries(state.entries);
   const left = Math.round(g.kcal - t.kcal);
   const over = left < 0;
+  let banner = '';
+  if (!state.settings.goalsSet) banner = 'Set your daily calorie and macro targets ›';
+  else if (cloud.connected() && cloud.status.error) banner = `Backup to GitHub isn't working: ${cloud.status.error} ›`;
+  else if (!cloud.connected()) banner = 'Turn on automatic backup so your diary is saved off this phone ›';
   $('#today').innerHTML = `
-    ${state.settings.goalsSet ? '' : '<button class="banner" data-act="settings">Set your daily calorie and macro targets ›</button>'}
+    ${banner ? `<button class="banner ${cloud.status.error ? 'warn' : ''}" data-act="settings">${esc(banner)}</button>` : ''}
     <section class="card summary">
       <div class="kcal-row">
         <div><div class="big ${over ? 'over' : ''}">${fmt(Math.abs(left))}</div><div class="muted">${over ? 'kcal over' : 'kcal left'}</div></div>
@@ -987,8 +992,128 @@ function entryEditor(entry) {
 
 // ---------- Settings ----------
 
+function timeAgo(t) {
+  const mins = Math.round((Date.now() - t) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const d = new Date(t);
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString()
+    ? `today at ${time}`
+    : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} at ${time}`;
+}
+
+function cloudStatusText() {
+  const s = cloud.status;
+  if (s.busy) return 'Backing up…';
+  if (s.error) return `Last backup failed: ${s.error}`;
+  if (cloud.isDirty()) return 'Changes waiting to be backed up…';
+  if (!s.lastSaved) return 'Not backed up yet.';
+  return `Last backed up ${timeAgo(s.lastSaved)}.`;
+}
+
+function onCloudStatus() {
+  renderToday();
+  const el = $('.cloud-status');
+  if (el) {
+    el.textContent = cloudStatusText();
+    el.classList.toggle('error', !!cloud.status.error);
+  }
+}
+
+function cloudSection() {
+  const c = state.settings.cloud;
+  if (c) {
+    return `
+      <h4 class="section-label">Automatic backup (GitHub)</h4>
+      <p class="small">Saving to the private repository <b>${esc(c.repo)}</b> a few seconds after every change.</p>
+      <p class="small cloud-status muted">${esc(cloudStatusText())}</p>
+      <div class="two"><button class="btn secondary cloud-now">Back up now</button><button class="btn secondary cloud-restore">Restore</button></div>
+      <button class="link cloud-token">Replace token</button>
+      <button class="link cloud-off">Turn off automatic backup</button>`;
+  }
+  return `
+    <h4 class="section-label">Automatic backup (GitHub)</h4>
+    <p class="muted small">Saves your diary to a <b>private</b> GitHub repository after every change, so it survives a lost or new phone. On a new phone, connect the same repository to get everything back.</p>
+    <label class="field"><span>Private repository</span><input name="ghRepo" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="your-username/tally-data"></label>
+    <label class="field"><span>Access token</span><input name="ghToken" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github_pat_…"></label>
+    <button class="btn secondary cloud-connect">Connect</button>
+    <p class="small cloud-msg"></p>`;
+}
+
+function bindCloudSection(body, self) {
+  $('.cloud-connect', body)?.addEventListener('click', async (ev) => {
+    const msg = $('.cloud-msg', body);
+    msg.classList.remove('error');
+    const conf = { repo: cloud.normaliseRepo(val(body, 'ghRepo')), token: val(body, 'ghToken') };
+    if (!conf.repo || !conf.token) return (msg.textContent = 'Enter both the repository and the token.');
+    try {
+      const remote = await busy(ev.currentTarget, 'Connecting…', async () => {
+        await cloud.testConnection(conf);
+        return cloud.fetchRemote(conf);
+      });
+      state.settings.cloud = conf;
+      cloud.setConfig(conf);
+      await saveSettings();
+      if (isBackup(remote)) {
+        // Connecting on a new phone: bring the saved diary back first, then save the combined copy.
+        await importData(remote);
+        const n = remote.entries.length;
+        toast(`Restored ${n} diary ${n === 1 ? 'entry' : 'entries'} from GitHub`);
+      }
+      await cloud.saveNow();
+      if (isTop(self)) showScreen();
+    } catch (err) {
+      msg.classList.add('error');
+      msg.textContent = err.message;
+    }
+  });
+
+  $('.cloud-now', body)?.addEventListener('click', async (ev) => {
+    await busy(ev.currentTarget, 'Backing up…', () => cloud.saveNow());
+    toast(cloud.status.error ? 'Backup failed' : 'Backed up to GitHub');
+  });
+
+  $('.cloud-restore', body)?.addEventListener('click', async (ev) => {
+    try {
+      const remote = await busy(ev.currentTarget, 'Loading…', () => cloud.fetchRemote());
+      if (!isBackup(remote)) return toast('There is no backup on GitHub yet');
+      if (!confirm(`Restore ${remote.foods.length} foods and ${remote.entries.length} diary entries from GitHub? Matching items are updated; nothing is deleted.`)) return;
+      await importData(remote);
+      toast('Restored from GitHub');
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $('.cloud-token', body)?.addEventListener('click', async () => {
+    const token = prompt('Paste your new GitHub access token')?.trim();
+    if (!token) return;
+    const conf = { ...state.settings.cloud, token };
+    try {
+      await cloud.testConnection(conf);
+    } catch (err) {
+      return toast(err.message);
+    }
+    state.settings.cloud = conf;
+    cloud.setConfig(conf);
+    await saveSettings();
+    await cloud.saveNow();
+    toast(cloud.status.error ? 'Backup failed' : 'Token replaced and backed up');
+  });
+
+  $('.cloud-off', body)?.addEventListener('click', async () => {
+    if (!confirm('Stop backing up to GitHub? The backup already in your repository is kept.')) return;
+    state.settings.cloud = null;
+    cloud.setConfig(null);
+    await saveSettings();
+    renderToday();
+    if (isTop(self)) showScreen();
+  });
+}
+
 function settingsScreen() {
-  return {
+  const self = {
     title: 'Settings',
     render(body) {
       const s = state.settings;
@@ -1011,8 +1136,10 @@ function settingsScreen() {
 
         <button class="btn primary save">Save settings</button>
 
-        <h4 class="section-label">Backup</h4>
-        <p class="muted small">Your diary lives only on this phone. Export a backup now and then (the API key is not included).</p>
+        ${cloudSection()}
+
+        <h4 class="section-label">Backup file</h4>
+        <p class="muted small">Save a copy of your diary as a file, e.g. to iCloud Drive. Keys and tokens are never included.</p>
         <div class="two"><button class="btn secondary export">Export backup</button>
         <label class="btn secondary file-btn"><span>Import backup</span><input type="file" accept="application/json,.json" hidden></label></div>
 
@@ -1067,6 +1194,7 @@ function settingsScreen() {
         back();
       };
 
+      bindCloudSection(body, self);
       $('.export', body).onclick = exportBackup;
       $('.file-btn input', body).addEventListener('change', async (ev) => {
         const file = ev.target.files[0];
@@ -1075,7 +1203,8 @@ function settingsScreen() {
       });
 
       $('.wipe', body).onclick = async () => {
-        if (!confirm('Delete ALL foods and diary entries from this phone? This cannot be undone. (Settings are kept.)')) return;
+        const note = cloud.connected() ? ' The GitHub backup will be emptied too (older versions stay in the repository history).' : '';
+        if (!confirm(`Delete ALL foods and diary entries from this phone? This cannot be undone. (Settings are kept.)${note}`)) return;
         await db.clear('entries');
         await db.clear('foods');
         state.foods = [];
@@ -1084,10 +1213,12 @@ function settingsScreen() {
       };
     },
   };
+  return self;
 }
 
-async function exportBackup() {
-  const data = {
+// The backup contents (used for both the file export and the GitHub backup).
+async function buildBackup() {
+  return {
     app: 'tally',
     version: 1,
     exportedAt: new Date().toISOString(),
@@ -1096,6 +1227,25 @@ async function exportBackup() {
     foods: await db.all('foods'),
     entries: await db.all('entries'),
   };
+}
+
+const isBackup = (d) => d?.app === 'tally' && Array.isArray(d.foods) && Array.isArray(d.entries);
+
+// Merges a backup into this phone: matching items are updated, nothing is deleted.
+async function importData(data) {
+  await db.putMany('foods', data.foods);
+  await db.putMany('entries', data.entries);
+  if (data.goals) {
+    state.settings.goals = { ...state.settings.goals, ...data.goals };
+    state.settings.goalsSet = true;
+    await saveSettings();
+  }
+  await loadFoods();
+  await refreshToday();
+}
+
+async function exportBackup() {
+  const data = await buildBackup();
   const name = `tally-backup-${todayStr()}.json`;
   const file = new File([JSON.stringify(data)], name, { type: 'application/json' });
   if (navigator.canShare?.({ files: [file] })) {
@@ -1120,18 +1270,10 @@ async function importBackup(file) {
   } catch {
     return toast("That file isn't a backup.");
   }
-  if (data.app !== 'tally' || !Array.isArray(data.foods) || !Array.isArray(data.entries)) return toast("That file isn't a Tally backup.");
+  if (!isBackup(data)) return toast("That file isn't a Tally backup.");
   if (!confirm(`Import ${data.foods.length} foods and ${data.entries.length} diary entries? Matching items will be updated; nothing else is deleted.`)) return;
-  await db.putMany('foods', data.foods);
-  await db.putMany('entries', data.entries);
-  if (data.goals) {
-    state.settings.goals = { ...state.settings.goals, ...data.goals };
-    state.settings.goalsSet = true;
-    await saveSettings();
-  }
-  await loadFoods();
+  await importData(data);
   closeSheet();
-  await refreshToday();
   toast('Backup imported');
 }
 
@@ -1139,14 +1281,21 @@ async function importBackup(file) {
 
 async function init() {
   await loadSettings();
+  cloud.init({ getData: buildBackup, onStatus: onCloudStatus });
+  cloud.setConfig(state.settings.cloud);
+  db.onWrite(() => cloud.scheduleSave());
   await loadFoods();
   await refreshToday();
+  if (cloud.isDirty()) cloud.saveNow(); // changes left unsaved last time
   navigator.storage?.persist?.().catch(() => {});
   if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
 
-  // Reopening the app on a new day jumps to the new day.
+  window.addEventListener('pagehide', () => cloud.flush());
+
   document.addEventListener('visibilitychange', async () => {
-    if (document.visibilityState !== 'visible') return;
+    // Leaving the app: save any pending changes straight away.
+    if (document.visibilityState === 'hidden') return cloud.flush();
+    // Reopening the app on a new day jumps to the new day.
     const t = todayStr();
     if (t === state.today) return;
     if (state.date === state.today) state.date = t;

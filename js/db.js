@@ -24,12 +24,17 @@ function open() {
   return dbPromise;
 }
 
+const writeListeners = new Set();
+
 async function run(storeName, mode, fn) {
   const db = await open();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, mode);
     const req = fn(tx.objectStore(storeName));
-    tx.oncomplete = () => resolve(req?.result);
+    tx.oncomplete = () => {
+      if (mode === 'readwrite') writeListeners.forEach((l) => l(storeName));
+      resolve(req?.result);
+    };
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error);
   });
@@ -46,4 +51,6 @@ export const db = {
     }),
   delete: (store, key) => run(store, 'readwrite', (s) => s.delete(key)),
   clear: (store) => run(store, 'readwrite', (s) => s.clear()),
+  // Called with the store name after every successful write (used for automatic backup).
+  onWrite: (listener) => writeListeners.add(listener),
 };

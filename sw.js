@@ -1,6 +1,6 @@
 // Offline support: always try the network first (so updates show up straight away),
 // and fall back to the last cached copy when there's no connection.
-const CACHE = 'tally-v1';
+const CACHE = 'tally-v2';
 const SHELL = [
   './',
   'index.html',
@@ -13,6 +13,7 @@ const SHELL = [
   'js/ai.js',
   'js/images.js',
   'js/scanner.js',
+  'js/cloud.js',
   'vendor/anthropic-sdk.js',
   'vendor/barcode-detector.js',
   'vendor/zxing_reader.wasm',
