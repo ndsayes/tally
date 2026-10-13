@@ -124,9 +124,36 @@ function foodEntry(food, qty, unitKey, meal) {
     qty,
     unitKey,
     amount: amountText(food, qty, unitKey),
-    estimate: food.source === 'ai',
+    estimate: food.source === 'ai' || !!food.estimated,
     ...scale(food, qty, unitKey),
   };
+}
+
+// Weight in grams of an amount of a food, or null when the food's weight is unknown.
+function gramsOf(food, qty, unitKey) {
+  const unit = unitsFor(food).find((u) => u.key === unitKey);
+  return unit?.grams ? qty * unit.grams : null;
+}
+
+// A favorite meal is saved as one food made of several parts, e.g. yogurt + granola + honey.
+// parts: [{ name, amount, grams|null, kcal, protein, carbs, fat, estimate }]
+async function saveFavoriteMeal(name, parts) {
+  const sum = (k) => parts.reduce((s, p) => s + (p[k] || 0), 0);
+  const grams = parts.every((p) => p.grams > 0) ? Math.round(sum('grams')) : null;
+  return saveFood({
+    name,
+    brand: '',
+    per: { label: '1 serving', grams },
+    kcal: Math.round(sum('kcal')),
+    protein: round1(sum('protein')),
+    carbs: round1(sum('carbs')),
+    fat: round1(sum('fat')),
+    packageGrams: null,
+    source: 'meal',
+    favorite: true,
+    estimated: parts.some((p) => p.estimate),
+    ingredients: parts.map(({ name: n, amount, kcal }) => ({ name: n, amount: amount || '', kcal: Math.round(kcal || 0) })),
+  });
 }
 
 async function addEntry(entry) {
@@ -172,7 +199,20 @@ function mealCard(m) {
     <div class="meal-head"><h3>${MEAL_NAMES[m]}</h3><span class="muted">${items.length ? `${fmt(kcal)} kcal` : ''}</span>
     <button class="add-btn" data-add="${m}">+ Add</button></div>
     ${items.length ? `<ul class="entries">${items.map(entryRow).join('')}</ul>` : ''}
+    ${items.length > 1 ? `<button class="link small fav-meal" data-fav="${m}">☆ Save this ${MEAL_NAMES[m].toLowerCase()} as a favorite</button>` : ''}
   </section>`;
+}
+
+async function saveMealAsFavorite(meal) {
+  const items = state.entries.filter((e) => e.meal === meal);
+  const name = prompt('Name this favorite (e.g. "Usual breakfast bowl")')?.trim();
+  if (!name) return;
+  const parts = items.map((e) => {
+    const food = e.foodId && state.foods.find((f) => f.id === e.foodId);
+    return { ...e, grams: food && e.unitKey ? gramsOf(food, e.qty, e.unitKey) : null };
+  });
+  await saveFavoriteMeal(name, parts);
+  toast(`Saved "${name}" to favorites`);
 }
 
 function renderToday() {
@@ -203,6 +243,8 @@ $('#today').addEventListener('click', (ev) => {
   if (add) return openSheet(addMenu(add.dataset.add));
   const entry = ev.target.closest('[data-entry]');
   if (entry) return openEntry(entry.dataset.entry);
+  const fav = ev.target.closest('[data-fav]');
+  if (fav) return saveMealAsFavorite(fav.dataset.fav);
   if (ev.target.closest('[data-act="settings"]')) openSheet(settingsScreen());
 });
 
@@ -317,27 +359,45 @@ function addMenu(meal) {
           ${tile('photo', ICONS.camera, 'Photo of meal')}
         </div>
         <button class="row-link" data-act="quick"><span>Quick add calories</span><span>›</span></button>
-        <h4 class="section-label">My foods</h4>
         <input type="search" class="search" placeholder="Search my foods" autocomplete="off" enterkeyhint="search" value="${esc(query)}">
-        <div class="food-list"></div>`;
+        <div class="lists"></div>`;
 
-      const list = $('.food-list', body);
+      const lists = $('.lists', body);
+      const rows = (foods) =>
+        `<div class="food-list">${foods
+          .map(
+            (f) => `<div class="food-row">
+              <button class="food-main" data-food="${f.id}"><div class="entry-name">${f.favorite ? '<span class="star">★</span> ' : ''}${esc(f.name)}</div><div class="muted small">${esc(foodSubtitle(f))}</div></button>
+              <button class="quick-add" data-quick="${f.id}" aria-label="Log ${esc(f.name)} again">+</button></div>`,
+          )
+          .join('')}</div>`;
       const draw = () => {
         const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
-        const foods = state.foods
-          .filter((f) => tokens.every((t) => `${f.name} ${f.brand || ''}`.toLowerCase().includes(t)))
-          .sort((a, b) => (b.lastUsed || b.createdAt || 0) - (a.lastUsed || a.createdAt || 0));
-        list.innerHTML = foods.length
-          ? foods
-              .map(
-                (f) => `<div class="food-row">
-                  <button class="food-main" data-food="${f.id}"><div class="entry-name">${esc(f.name)}</div><div class="muted small">${esc(foodSubtitle(f))}</div></button>
-                  <button class="quick-add" data-quick="${f.id}" aria-label="Log ${esc(f.name)} again">+</button></div>`,
-              )
-              .join('')
-          : `<p class="muted small empty">${
-              state.foods.length ? 'No matches.' : 'Foods you scan, snap or save will appear here, ready to log again in one tap.'
-            }</p>`;
+        const recent = (a, b) => (b.lastUsed || b.createdAt || 0) - (a.lastUsed || a.createdAt || 0);
+        if (tokens.length) {
+          const found = state.foods
+            .filter((f) => tokens.every((t) => `${f.name} ${f.brand || ''}`.toLowerCase().includes(t)))
+            .sort(recent);
+          lists.innerHTML = found.length ? rows(found) : '<p class="muted small empty">No matches.</p>';
+          return;
+        }
+        const favorites = state.foods.filter((f) => f.favorite).sort(recent);
+        const others = state.foods.filter((f) => !f.favorite).sort(recent);
+        lists.innerHTML = `
+          <h4 class="section-label">Favorites</h4>
+          ${
+            favorites.length
+              ? rows(favorites)
+              : '<p class="muted small empty card-ish">Meals you have often, like a breakfast bowl or a shake, can be saved here and logged with one tap. Tick "Save as a favorite" after describing one, or tap ☆ on any food.</p>'
+          }
+          <h4 class="section-label">My foods</h4>
+          ${
+            others.length
+              ? rows(others)
+              : `<p class="muted small empty card-ish">${
+                  favorites.length ? 'Other foods you scan, snap or save appear here.' : 'Foods you scan, snap or save will appear here, ready to log again in one tap.'
+                }</p>`
+          }`;
       };
       draw();
 
@@ -375,6 +435,13 @@ function addMenu(meal) {
 
 // ---------- Amount picker (log or edit an entry for a saved food) ----------
 
+function ingredientList(food) {
+  if (!food.ingredients?.length) return '';
+  return `<ul class="ingredients">${food.ingredients
+    .map((i) => `<li>${esc(i.name)}${i.amount ? ` · ${esc(i.amount)}` : ''} · ${fmt(i.kcal)} kcal</li>`)
+    .join('')}</ul>`;
+}
+
 function amountScreen(food, meal, entry = null) {
   const units = unitsFor(food);
   let qty = entry?.qty ?? food.lastQty ?? 1;
@@ -391,6 +458,7 @@ function amountScreen(food, meal, entry = null) {
           ${food.brand ? `<div class="muted">${esc(food.brand)}</div>` : ''}
           <div class="muted small">Per ${esc(unitLabel(food, 'per'))}: ${esc(macroLine(food))}</div>
         </div>
+        ${ingredientList(food)}
         <div class="amount-row">
           <input class="qty" type="number" inputmode="decimal" step="any" min="0" value="${qty}" aria-label="Amount">
           <select class="unit" aria-label="Unit">${units
@@ -408,7 +476,18 @@ function amountScreen(food, meal, entry = null) {
         ${mealSelect(meal)}
         <button class="btn primary save">${entry ? 'Save' : 'Add'}</button>
         ${entry ? '<button class="btn danger-outline del">Delete entry</button>' : ''}
+        <button class="link fav-toggle"></button>
         <button class="link edit-food">Edit food details</button>`;
+
+      const favBtn = $('.fav-toggle', body);
+      const drawFav = () => (favBtn.textContent = food.favorite ? '★ In favorites (tap to remove)' : '☆ Add to favorites');
+      drawFav();
+      favBtn.onclick = async () => {
+        food.favorite = !food.favorite;
+        await saveFood(food);
+        drawFav();
+        toast(food.favorite ? 'Added to favorites' : 'Removed from favorites');
+      };
 
       const qtyEl = $('.qty', body);
       const unitEl = $('.unit', body);
@@ -461,6 +540,7 @@ function foodEditor(food, { title = 'Food details', note = '', onSaved, onDelete
     render(body) {
       body.innerHTML = `
         ${note ? `<p class="note">${esc(note)}</p>` : ''}
+        ${food.ingredients?.length ? `<div class="group-label">Made of</div>${ingredientList(food)}` : ''}
         <form class="form" novalidate>
           ${textField('name', 'Name', food.name, 'required autocomplete="off"')}
           ${textField('brand', 'Brand (optional)', food.brand, 'autocomplete="off"')}
@@ -718,7 +798,14 @@ function describeScreen(meal) {
         if (!requireKey()) return;
         try {
           const result = await busy(go, 'Working it out…', () =>
-            parseMeal({ apiKey: state.settings.apiKey, model: state.settings.model, text: text.trim(), foods: state.foods }),
+            parseMeal({
+              apiKey: state.settings.apiKey,
+              model: state.settings.model,
+              text: text.trim(),
+              foods: state.foods,
+              home: state.settings.home,
+              onProgress: (msg) => (go.textContent = msg),
+            }),
           );
           if (isTop(self)) push(reviewScreen(result, meal));
         } catch (err) {
@@ -757,6 +844,8 @@ function photoScreen(meal) {
               text: note.trim(),
               image: photos[0],
               foods: state.foods,
+              home: state.settings.home,
+              onProgress: (msg) => (go.textContent = msg),
             }),
           );
           if (isTop(self)) push(reviewScreen(result, meal));
@@ -803,6 +892,11 @@ const rowNutrition = (r) => (r.kind === 'food' ? scale(r.food, r.qty, r.unitKey)
 
 function reviewScreen(result, meal) {
   const rows = (result.items || []).map(toRow);
+  // Restaurant dishes that were looked up are worth keeping, so next time needs no search.
+  if (result.researched) rows.forEach((r) => r.kind === 'est' && (r.save = true));
+  const sources = (result.sources || []).filter((s) => /^https?:\/\//i.test(s.url));
+  let combo = false;
+  let comboName = '';
   return {
     title: 'Check & add',
     render(body) {
@@ -840,10 +934,31 @@ function reviewScreen(result, meal) {
 
       body.innerHTML = `
         ${result.note ? `<p class="note">${esc(result.note)}</p>` : ''}
+        ${
+          sources.length
+            ? `<p class="muted small sources">Sources: ${sources
+                .map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a>`)
+                .join(' · ')}</p>`
+            : ''
+        }
         <div class="review-list">${rows.map(rowHtml).join('')}</div>
         <div class="total"></div>
+        <div class="combo-box">
+          <label class="check"><input type="checkbox" class="combo" ${combo ? 'checked' : ''}> Save as a favorite, to log it in one tap next time</label>
+          <input class="combo-name" type="text" autocomplete="off" placeholder="Name it, e.g. Post-workout shake" value="${esc(comboName)}" ${combo ? '' : 'hidden'}>
+        </div>
         ${mealSelect(meal)}
         <button class="btn primary add">Add to diary</button>`;
+
+      const comboBox = $('.combo', body);
+      const comboInput = $('.combo-name', body);
+      comboBox.addEventListener('change', () => {
+        combo = comboBox.checked;
+        comboInput.hidden = !combo;
+        if (combo) comboInput.focus();
+        update();
+      });
+      comboInput.addEventListener('input', () => (comboName = comboInput.value));
 
       const update = () => {
         $$('.review-item', body).forEach((el) => {
@@ -858,7 +973,7 @@ function reviewScreen(result, meal) {
           { kcal: 0, protein: 0, carbs: 0, fat: 0 },
         );
         $('.total', body).textContent = `Total: ${macroLine(total)}`;
-        $('.add', body).textContent = `Add ${rows.length} item${rows.length === 1 ? '' : 's'}`;
+        $('.add', body).textContent = combo ? 'Add and save favorite' : `Add ${rows.length} item${rows.length === 1 ? '' : 's'}`;
       };
       update();
 
@@ -887,25 +1002,62 @@ function reviewScreen(result, meal) {
         showScreen();
       });
 
+      const estFood = (r) =>
+        saveFood({
+          name: r.name || 'Food',
+          brand: '',
+          per: { label: '1 portion', grams: r.grams || null },
+          kcal: Math.round(r.kcal),
+          protein: round1(r.protein),
+          carbs: round1(r.carbs),
+          fat: round1(r.fat),
+          packageGrams: null,
+          source: 'ai',
+        });
+
       $('.add', body).onclick = async () => {
         const mealSel = val(body, 'meal');
+
+        if (combo) {
+          // Save the whole meal as one favorite and log it as a single entry.
+          const name = comboName.trim();
+          if (!name) return toast('Give your favorite a name');
+          const parts = rows
+            .filter((r) => r.kind === 'est' || r.qty > 0)
+            .map((r) =>
+              r.kind === 'food'
+                ? {
+                    name: r.food.name,
+                    amount: amountText(r.food, r.qty, r.unitKey),
+                    grams: gramsOf(r.food, r.qty, r.unitKey),
+                    ...scale(r.food, r.qty, r.unitKey),
+                    estimate: r.food.source === 'ai' || !!r.food.estimated,
+                  }
+                : {
+                    name: r.name || 'Food',
+                    amount: r.grams ? `≈ ${fmt(r.grams)} g` : '',
+                    grams: r.grams || null,
+                    kcal: r.kcal,
+                    protein: r.protein,
+                    carbs: r.carbs,
+                    fat: r.fat,
+                    estimate: r.confidence !== 'high',
+                  },
+            );
+          for (const r of rows) if (r.kind === 'est' && r.save) await estFood(r);
+          const fav = await saveFavoriteMeal(name, parts);
+          await addEntry(foodEntry(fav, 1, 'per', mealSel));
+          await touchFood(fav, 1, 'per');
+          return afterLog(`Added "${name}" and saved it to favorites`);
+        }
+
         for (const r of rows) {
           if (r.kind === 'food') {
             if (!(r.qty > 0)) continue;
             await addEntry(foodEntry(r.food, r.qty, r.unitKey, mealSel));
             await touchFood(r.food, r.qty, r.unitKey);
           } else if (r.save) {
-            const food = await saveFood({
-              name: r.name || 'Food',
-              brand: '',
-              per: { label: '1 portion', grams: r.grams || null },
-              kcal: Math.round(r.kcal),
-              protein: round1(r.protein),
-              carbs: round1(r.carbs),
-              fat: round1(r.fat),
-              packageGrams: null,
-              source: 'ai',
-            });
+            const food = await estFood(r);
             await addEntry({ ...foodEntry(food, 1, 'per', mealSel), estimate: r.confidence !== 'high' });
             await touchFood(food, 1, 'per');
           } else {
@@ -1133,6 +1285,7 @@ function settingsScreen() {
         ).join('')}</select></label>
         <button class="btn secondary test">Test key</button>
         <p class="status small"></p>
+        <label class="field"><span>Home city (helps find restaurants you mention)</span><input name="home" type="text" autocomplete="off" placeholder="e.g. Toronto, Ontario" value="${esc(s.home || '')}"></label>
 
         <button class="btn primary save">Save settings</button>
 
@@ -1187,6 +1340,7 @@ function settingsScreen() {
         };
         s.apiKey = val(body, 'apiKey');
         s.model = val(body, 'model');
+        s.home = val(body, 'home');
         s.goalsSet = true;
         await saveSettings();
         renderToday();

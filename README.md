@@ -10,8 +10,16 @@ No server, no account, no subscription. Your diary is stored only on your phone.
 - **Scan barcode**: looks the product up in Open Food Facts (free)
 - **Snap a label**: Claude reads a nutrition-label photo and saves it as one of your foods
   (if the barcode was unknown, it's linked to that barcode for next time)
-- **Describe it**: "200 g Costco bulgogi with jasmine rice", "half the tray", etc.
+- **Describe it**: "200 g Costco bulgogi with jasmine rice", "half the tray", etc. Mention a
+  restaurant ("bone marrow burger from Bar Isabel", "pad thai from the place on King and Bay")
+  and Claude searches the web for that dish on its menu, near the home city set in Settings.
+  A lookup costs about 1–3 cents (web searches are $10 per 1,000); saving the dish to My
+  Foods means the next time needs no search.
 - **Photo of meal**: Claude estimates what's on the plate (estimates; check them)
+- **Favorites**: save a meal you have often (e.g. yogurt + granola + honey, or a 7-ingredient
+  shake) under one name, then log it with one tap or just say "my post-workout shake". Create
+  one by ticking "Save as a favorite" after describing a meal, by tapping "Save this … as a
+  favorite" under a meal on the Today screen, or by tapping ☆ on any food.
 - My Foods with one-tap re-logging, quick add, edit/delete, past days
 - Export/import a backup file
 

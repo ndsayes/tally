@@ -192,6 +192,13 @@ main { padding: 0 16px; max-width: 640px; margin: 0 auto; }
 .food-main { flex: 1; min-width: 0; padding: 12px 14px; text-align: left; }
 .quick-add { width: 48px; align-self: stretch; color: var(--accent); font-size: 26px; font-weight: 300; }
 .empty { padding: 14px; margin: 0; }
+.card-ish { background: var(--card); border-radius: 12px; }
+.star { color: var(--carbs); }
+.meal .fav-meal { margin: 6px 0 0; padding: 6px 0; font-size: 14px; }
+.ingredients { margin: -4px 0 14px; padding-left: 18px; font-size: 14px; color: var(--muted); }
+.combo-box { background: var(--card); border-radius: 14px; padding: 12px; margin-bottom: 12px; }
+.combo-box .check { margin: 0; }
+.combo-name { width: 100%; margin-top: 10px; border: 0; border-radius: 10px; background: var(--field); padding: 10px 12px; min-height: 44px; }
 
 /* ---------- amount ---------- */
 .food-head { margin-bottom: 14px; }
@@ -223,6 +230,7 @@ main { padding: 0 16px; max-width: 640px; margin: 0 auto; }
 .ri-head .rm { width: 32px; height: 32px; border-radius: 16px; font-size: 22px; color: var(--muted); }
 .review-item .amount-row { margin-bottom: 6px; }
 .review-item .amount-row input, .review-item .amount-row select { background: var(--field); }
+.sources a { overflow-wrap: anywhere; }
 .total { font-weight: 700; margin: 6px 2px 14px; font-variant-numeric: tabular-nums; }
 
 /* ---------- toast ---------- */
