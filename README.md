@@ -21,6 +21,9 @@ No server, no account, no subscription. Your diary is stored only on your phone.
   A lookup costs about 1–3 cents (web searches are $10 per 1,000); saving the dish to My
   Foods means the next time needs no search.
 - **Photo of meal**: Claude estimates what's on the plate (estimates; check them)
+- **Lego mode**: build one meal from its ingredients (e.g. a burger: scan the buns, the cheese
+  and the patties, describe the sauce, quick-add the onions). It's logged as a single item.
+  Tap it later in the diary → **Edit ingredients** to change amounts or swap parts.
 - **Favorites**: save a meal you have often (e.g. yogurt + granola + honey, or a 7-ingredient
   shake) under one name, then log it with one tap or just say "my post-workout shake". Create
   one by ticking "Save as a favorite" after describing a meal, by tapping "Save this … as a

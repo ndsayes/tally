@@ -351,6 +351,11 @@ main { padding: 4px 16px 0; max-width: 640px; margin: 0 auto; }
   background: var(--card); border-radius: var(--radius); padding: 14px; font-weight: 600; text-align: left; color: var(--text);
 }
 .tile svg { width: 38px; height: 38px; padding: 7px; border-radius: 11px; background: var(--accent-soft); color: var(--accent); }
+/* Lego mode spans the full width under the four capture tiles. */
+.tile.wide { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 14px; min-height: 72px; }
+.tile.wide > span { display: flex; flex-direction: column; gap: 2px; }
+.tile-sub { font-size: .765rem; font-weight: 400; color: var(--muted); }
+.build-hint { margin-bottom: 12px; }
 .row-link { display: flex; justify-content: space-between; align-items: center; width: 100%; min-height: 52px; background: var(--card); border-radius: 14px; padding: 0 16px; font-weight: 600; color: var(--accent); }
 .row-link span:last-child { color: var(--muted); font-size: 1.2rem; }
 .row-link:active, .food-main:active { opacity: .6; }
