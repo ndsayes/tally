@@ -1,7 +1,7 @@
 // Offline support: always try the network first (so updates show up straight away),
 // and fall back to the last cached copy when there's no connection.
 // Change this on every release: it's how installed copies notice there's an update.
-const CACHE = 'tally-v11';
+const CACHE = 'tally-v12';
 const SHELL = [
   './',
   'index.html',

@@ -5,10 +5,10 @@ No server, no account, no subscription. Your diary is stored only on your phone.
 
 ## What it does
 
-- **Week dashboard** (the home screen): one coloured circle per day showing how close you
+- **Summary** tab (the home screen): one coloured circle per day showing how close you
   came to your calorie goal: green = met (within 5%), yellow = 90%+, orange = 75–89%,
   red = further off (going over counts the same way). Switch between This week, Last week and
-  Last 7 days; see today's numbers with a **Log food** button, plus the period's days on
+  Last 7 days; see today's numbers (tap **+** to add food, or **Today ›** to open the diary), plus the period's days on
   target and average calories and macros. Tap any day to open its log.
 - Daily calorie goal and protein / carbs / fat targets
 - Breakfast, Lunch, Dinner, Snacks
@@ -45,7 +45,7 @@ these files, then turn on Settings → Pages → "Deploy from a branch" (main, r
 1. Open the site's address in **Safari**.
 2. Tap the Share button → **Add to Home Screen** → Add.
 3. Open Tally from the home screen icon (not from Safari, since the two keep separate data).
-4. Tap ⚙︎ → set your targets → paste your Claude API key → **Test key** → **Save settings**.
+4. Tap ⚙︎ → set your targets → paste your Claude API key → **Test key**. Settings save automatically.
 
 ## Claude API key
 
