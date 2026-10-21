@@ -43,6 +43,7 @@ const ICONS = {
   forward: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>',
   close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>',
   plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+  lego: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="9" width="18" height="11" rx="2"/><rect x="6" y="5" width="4" height="4" rx="1"/><rect x="14" y="5" width="4" height="4" rx="1"/></svg>',
 };
 
 const numField = (name, label, value, attrs = '') =>
@@ -145,24 +146,74 @@ function gramsOf(food, qty, unitKey) {
 
 // A favorite meal is saved as one food made of several parts, e.g. yogurt + granola + honey.
 // parts: [{ name, amount, grams|null, kcal, protein, carbs, fat, estimate }]
-async function saveFavoriteMeal(name, parts) {
+// A meal made of parts (a favorite, or a Lego-mode build) is saved as one food. Each part keeps
+// its editable row, so the meal can be reopened and changed later.
+async function saveMealFood(name, rows, { favorite = true, food = {} } = {}) {
+  const parts = rows.filter((r) => r.qty > 0).map(rowToPart);
   const sum = (k) => parts.reduce((s, p) => s + (p[k] || 0), 0);
   const grams = parts.every((p) => p.grams > 0) ? Math.round(sum('grams')) : null;
-  return saveFood({
-    name,
-    brand: '',
-    per: { label: '1 serving', grams },
-    kcal: Math.round(sum('kcal')),
-    protein: round1(sum('protein')),
-    carbs: round1(sum('carbs')),
-    fat: round1(sum('fat')),
-    packageGrams: null,
-    source: 'meal',
-    favorite: true,
-    estimated: parts.some((p) => p.estimate),
-    ingredients: parts.map(({ name: n, amount, kcal }) => ({ name: n, amount: amount || '', kcal: Math.round(kcal || 0) })),
-  });
+  return saveFood(
+    Object.assign(food, {
+      name,
+      brand: '',
+      per: { label: '1 serving', grams },
+      kcal: Math.round(sum('kcal')),
+      protein: round1(sum('protein')),
+      carbs: round1(sum('carbs')),
+      fat: round1(sum('fat')),
+      packageGrams: null,
+      source: 'meal',
+      favorite,
+      estimated: parts.some((p) => p.estimate),
+      ingredients: parts,
+    }),
+  );
 }
+
+function rowToPart(r) {
+  const n = rowNutrition(r);
+  if (r.kind === 'food') {
+    return {
+      name: r.food.name,
+      amount: amountText(r.food, r.qty, r.unitKey),
+      grams: gramsOf(r.food, r.qty, r.unitKey),
+      ...n,
+      estimate: r.food.source === 'ai' || !!r.food.estimated,
+      row: { kind: 'food', foodId: r.food.id, qty: r.qty, unitKey: r.unitKey },
+    };
+  }
+  const { save, ...row } = r; // "save to My Foods" is a one-time choice, not part of the meal
+  return { name: r.name || 'Food', amount: estAmount(r), grams: r.unitGrams ? r.unitGrams * r.qty : null, ...n, estimate: r.confidence !== 'high', row };
+}
+
+function partToRow(p) {
+  const food = p.row?.kind === 'food' && state.foods.find((f) => f.id === p.row.foodId);
+  if (food) return { kind: 'food', food, qty: p.row.qty, unitKey: unitsFor(food).some((u) => u.key === p.row.unitKey) ? p.row.unitKey : 'per' };
+  if (p.row?.kind === 'est') return { ...p.row, save: false };
+  // The food was deleted since: keep its numbers as one portion.
+  return {
+    kind: 'est', name: p.name, qty: 1, unit: 'portion', unitGrams: p.grams || 0,
+    kcal: p.kcal || 0, protein: p.protein || 0, carbs: p.carbs || 0, fat: p.fat || 0,
+    confidence: p.estimate ? 'medium' : 'high', save: false,
+  };
+}
+
+// Favorites saved before Lego mode kept only calories per part, so their macros can't be rebuilt.
+const canEditParts = (food) => food.ingredients?.length > 0 && food.ingredients.every((p) => p.row || p.protein !== undefined);
+
+// An estimated item ticked "Save to My Foods" becomes a food of its own (1 unit = its per-unit numbers).
+const estFood = (r) =>
+  saveFood({
+    name: r.name || 'Food',
+    brand: '',
+    per: { label: `1 ${r.unit}`, grams: r.unitGrams || null },
+    kcal: Math.round(r.kcal),
+    protein: round1(r.protein),
+    carbs: round1(r.carbs),
+    fat: round1(r.fat),
+    packageGrams: null,
+    source: 'ai',
+  });
 
 async function addEntry(entry) {
   const e = { id: uid(), date: state.date, createdAt: Date.now(), ...entry };
@@ -245,11 +296,16 @@ async function saveMealAsFavorite(meal) {
   const items = state.entries.filter((e) => e.meal === meal);
   const name = prompt('Name this favorite (e.g. "Usual breakfast bowl")')?.trim();
   if (!name) return;
-  const parts = items.map((e) => {
+  const rows = items.map((e) => {
     const food = e.foodId && state.foods.find((f) => f.id === e.foodId);
-    return { ...e, grams: food && e.unitKey ? gramsOf(food, e.qty, e.unitKey) : null };
+    if (food && e.unitKey && e.qty > 0) return { kind: 'food', food, qty: e.qty, unitKey: e.unitKey };
+    return {
+      kind: 'est', name: e.name, qty: 1, unit: 'portion', unitGrams: 0,
+      kcal: e.kcal || 0, protein: e.protein || 0, carbs: e.carbs || 0, fat: e.fat || 0,
+      confidence: e.estimate ? 'medium' : 'high',
+    };
   });
-  await saveFavoriteMeal(name, parts);
+  await saveMealFood(name, rows);
   toast(`Saved "${name}" to favorites`);
 }
 
@@ -648,11 +704,11 @@ function foodSubtitle(f) {
   return [f.brand, `${fmt(f.kcal)} kcal per ${unitLabel(f, 'per')}`].filter(Boolean).join(' · ');
 }
 
-function addMenu(meal) {
+function addMenu(meal, pick = null) {
   const tile = (act, icon, label) => `<button class="tile" data-act="${act}">${icon}<span>${label}</span></button>`;
   let query = '';
   const self = {
-    title: `Add to ${MEAL_NAMES[meal]}`,
+    title: pick ? 'Add ingredient' : `Add to ${MEAL_NAMES[meal]}`,
     render(body) {
       // Search comes first: most logging is re-logging something you've had before.
       body.innerHTML = `
@@ -662,7 +718,12 @@ function addMenu(meal) {
             ${tile('scan', ICONS.barcode, 'Scan barcode')}
             ${tile('label', ICONS.label, 'Snap a label')}
             ${tile('describe', ICONS.chat, 'Describe it')}
-            ${tile('photo', ICONS.camera, 'Photo of meal')}
+            ${tile('photo', ICONS.camera, pick ? 'Photo' : 'Photo of meal')}
+            ${
+              pick
+                ? ''
+                : `<button class="tile wide" data-act="lego">${ICONS.lego}<span><span>Lego mode</span><span class="tile-sub">Build one meal from its ingredients</span></span></button>`
+            }
           </div>
           <button class="row-link" data-act="quick"><span>Quick add calories</span><span aria-hidden="true">›</span></button>
         </div>
@@ -716,19 +777,21 @@ function addMenu(meal) {
 
       body.addEventListener('click', async (ev) => {
         const act = ev.target.closest('[data-act]')?.dataset.act;
-        if (act === 'scan') return push(scanScreen(meal));
-        if (act === 'label') return push(labelScreen(meal));
-        if (act === 'describe') return push(describeScreen(meal));
-        if (act === 'photo') return push(photoScreen(meal));
-        if (act === 'quick') return push(quickAddScreen(meal));
+        if (act === 'scan') return push(scanScreen(meal, pick));
+        if (act === 'label') return push(labelScreen(meal, { pick }));
+        if (act === 'describe') return push(describeScreen(meal, pick));
+        if (act === 'photo') return push(photoScreen(meal, pick));
+        if (act === 'quick') return push(quickAddScreen(meal, pick));
+        if (act === 'lego') return push(builderScreen(meal));
         const foodBtn = ev.target.closest('[data-food]');
-        if (foodBtn) return push(amountScreen(state.foods.find((f) => f.id === foodBtn.dataset.food), meal));
+        if (foodBtn) return push(amountScreen(state.foods.find((f) => f.id === foodBtn.dataset.food), meal, null, pick));
         const quick = ev.target.closest('[data-quick]');
         if (quick) {
           // Log again with the amount used last time, and stay here to add more.
           const food = state.foods.find((f) => f.id === quick.dataset.quick);
           const unitKey = unitsFor(food).some((u) => u.key === food.lastUnit) ? food.lastUnit : 'per';
           const qty = food.lastQty || 1;
+          if (pick) return pick([{ kind: 'food', food, qty, unitKey }]);
           await addEntry(foodEntry(food, qty, unitKey, meal));
           await touchFood(food, qty, unitKey);
           await refreshToday();
@@ -750,7 +813,8 @@ function ingredientList(food) {
     .join('')}</ul>`;
 }
 
-function amountScreen(food, meal, entry = null) {
+// pick: when adding an ingredient in Lego mode, hand the amount back instead of logging it.
+function amountScreen(food, meal, entry = null, pick = null) {
   const units = unitsFor(food);
   let qty = entry?.qty ?? food.lastQty ?? 1;
   let unitKey = entry?.unitKey ?? food.lastUnit ?? 'per';
@@ -781,16 +845,16 @@ function amountScreen(food, meal, entry = null) {
             : ''
         }
         <div class="preview"></div>
-        ${mealDateFields(meal, entry?.date)}
-        <button class="btn primary cta save">${entry ? 'Save' : 'Add'}</button>
+        ${pick ? '' : mealDateFields(meal, entry?.date)}
+        <button class="btn primary cta save">${pick ? 'Add to meal' : entry ? 'Save' : 'Add'}</button>
         ${entry ? '<button class="btn danger-outline del">Delete entry</button>' : ''}
-        <button class="link fav-toggle"></button>
-        <button class="link edit-food">Edit food details</button>`;
+        ${!pick && canEditParts(food) ? '<button class="link edit-parts">Edit ingredients</button>' : ''}
+        ${pick ? '' : '<button class="link fav-toggle"></button><button class="link edit-food">Edit food details</button>'}`;
 
       const favBtn = $('.fav-toggle', body);
-      const drawFav = () => (favBtn.textContent = food.favorite ? '★ In favorites (tap to remove)' : '☆ Add to favorites');
+      const drawFav = () => favBtn && (favBtn.textContent = food.favorite ? '★ In favorites (tap to remove)' : '☆ Add to favorites');
       drawFav();
-      favBtn.onclick = async () => {
+      if (favBtn) favBtn.onclick = async () => {
         food.favorite = !food.favorite;
         await saveFood(food);
         drawFav();
@@ -817,6 +881,10 @@ function amountScreen(food, meal, entry = null) {
 
       $('.save', body).onclick = async () => {
         if (!(qty > 0)) return toast('Enter an amount');
+        if (pick) {
+          await touchFood(food, qty, unitKey);
+          return pick([{ kind: 'food', food, qty, unitKey }]);
+        }
         const date = dateVal(body);
         const data = { ...foodEntry(food, qty, unitKey, val(body, 'meal')), date };
         if (entry) await db.put('entries', { ...entry, ...data });
@@ -829,7 +897,8 @@ function amountScreen(food, meal, entry = null) {
         await db.delete('entries', entry.id);
         afterLog('Deleted');
       });
-      $('.edit-food', body).onclick = () =>
+      $('.edit-parts', body)?.addEventListener('click', () => push(builderScreen(entry?.meal ?? meal, { food, entry })));
+      if (!pick) $('.edit-food', body).onclick = () =>
         push(
           foodEditor(food, {
             onSaved: () => back(),
@@ -906,7 +975,7 @@ function foodEditor(food, { title = 'Food details', note = '', onSaved, onDelete
 
 // ---------- Barcode scanning ----------
 
-function scanScreen(meal) {
+function scanScreen(meal, pick = null) {
   let scanner = null;
   const self = {
     title: 'Scan barcode',
@@ -925,7 +994,7 @@ function scanScreen(meal) {
         scanner?.stop();
         if (!isTop(self)) return;
         status.textContent = `Read ${code}. Looking it up…`;
-        await handleBarcode(code, meal, self, body);
+        await handleBarcode(code, meal, self, body, pick);
       };
 
       scanner = createScanner($('video', body), found, (err) => {
@@ -948,9 +1017,9 @@ function scanScreen(meal) {
   return self;
 }
 
-async function handleBarcode(code, meal, screen, body) {
+async function handleBarcode(code, meal, screen, body, pick) {
   const local = state.foods.find((f) => sameBarcode(f.barcode, code));
-  if (local) return replace(amountScreen(local, meal));
+  if (local) return replace(amountScreen(local, meal, null, pick));
 
   let result;
   try {
@@ -959,18 +1028,18 @@ async function handleBarcode(code, meal, screen, body) {
     if (!isTop(screen)) return;
     $('.status', body).textContent = `Couldn't reach Open Food Facts (${err.message}).`;
     $('.fallback', body).innerHTML = '<button class="btn primary snap">Snap the label instead</button>';
-    $('.snap', body).onclick = () => replace(labelScreen(meal, { barcode: code }));
+    $('.snap', body).onclick = () => replace(labelScreen(meal, { barcode: code, pick }));
     return;
   }
   if (!isTop(screen)) return;
   if (result?.complete) {
     const food = await saveFood({ ...result.food });
-    return replace(amountScreen(food, meal));
+    return replace(amountScreen(food, meal, null, pick));
   }
-  replace(notFoundScreen(code, meal, result?.food));
+  replace(notFoundScreen(code, meal, result?.food, pick));
 }
 
-function notFoundScreen(code, meal, partial) {
+function notFoundScreen(code, meal, partial, pick) {
   return {
     title: 'Not in the database',
     render(body) {
@@ -983,12 +1052,12 @@ function notFoundScreen(code, meal, partial) {
         <p class="muted">Snap the nutrition label once and it's saved to this barcode, so next time the scan is instant.</p>
         <button class="btn primary snap">Snap the label</button>
         <button class="btn secondary manual">Type it in myself</button>`;
-      $('.snap', body).onclick = () => replace(labelScreen(meal, { barcode: code, hint: partial?.name || '' }));
+      $('.snap', body).onclick = () => replace(labelScreen(meal, { barcode: code, hint: partial?.name || '', pick }));
       $('.manual', body).onclick = () =>
         replace(
           foodEditor(
             { name: partial?.name || '', brand: partial?.brand || '', barcode: code, per: { label: '1 serving', grams: null }, source: 'manual' },
-            { title: 'New food', onSaved: (f) => replace(amountScreen(f, meal)) },
+            { title: 'New food', onSaved: (f) => replace(amountScreen(f, meal, null, pick)) },
           ),
         );
     },
@@ -1036,7 +1105,7 @@ const showError = (body, err) => {
 
 // ---------- Snap a label ----------
 
-function labelScreen(meal, { barcode = '', hint = '' } = {}) {
+function labelScreen(meal, { barcode = '', hint = '', pick = null } = {}) {
   const photos = [];
   const self = {
     title: 'Snap a label',
@@ -1075,7 +1144,7 @@ function labelScreen(meal, { barcode = '', hint = '' } = {}) {
             foodEditor(draft, {
               title: 'Check the label',
               note: `Check these against the label, then save.${r.notes ? ` Note: ${r.notes}` : ''}`,
-              onSaved: (f) => replace(amountScreen(f, meal)),
+              onSaved: (f) => replace(amountScreen(f, meal, null, pick)),
             }),
           );
         } catch (err) {
@@ -1089,7 +1158,7 @@ function labelScreen(meal, { barcode = '', hint = '' } = {}) {
 
 // ---------- Describe it / Photo of meal ----------
 
-function describeScreen(meal) {
+function describeScreen(meal, pick = null) {
   let text = '';
   const self = {
     title: 'Describe it',
@@ -1116,7 +1185,7 @@ function describeScreen(meal) {
               onProgress: (msg) => (go.textContent = msg),
             }),
           );
-          if (isTop(self)) push(reviewScreen(result, meal));
+          if (isTop(self)) showResult(result, meal, pick);
         } catch (err) {
           if (isTop(self)) showError(body, err);
         }
@@ -1126,7 +1195,7 @@ function describeScreen(meal) {
   return self;
 }
 
-function photoScreen(meal) {
+function photoScreen(meal, pick = null) {
   const photos = [];
   let note = '';
   const self = {
@@ -1157,7 +1226,7 @@ function photoScreen(meal) {
               onProgress: (msg) => (go.textContent = msg),
             }),
           );
-          if (isTop(self)) push(reviewScreen(result, meal));
+          if (isTop(self)) showResult(result, meal, pick);
         } catch (err) {
           if (isTop(self)) showError(body, err);
         }
@@ -1165,6 +1234,14 @@ function photoScreen(meal) {
     },
   };
   return self;
+}
+
+// In Lego mode the builder is the review step, so the items go straight into it.
+function showResult(result, meal, pick) {
+  if (!pick) return push(reviewScreen(result, meal));
+  const rows = (result.items || []).map(toRow);
+  if (rows.length) pick(rows);
+  else toast("Claude couldn't find any food in that. Try describing it differently.");
 }
 
 // ---------- Review AI results ----------
@@ -1211,6 +1288,85 @@ function rowNutrition(r) {
 
 const estAmount = (r) => `${round2(r.qty)} × ${r.unit}${r.unitGrams ? ` (${fmt(r.unitGrams)} g)` : ''}`;
 
+// One editable item card: a saved food (amount + unit) or an estimate (how many × per-unit numbers).
+function rowHtml(r, i) {
+  if (r.kind === 'food') {
+    return `<div class="review-item" data-i="${i}">
+      <div class="ri-head"><strong>${esc(r.food.name)}</strong><span class="badge ok">My food</span><button class="rm" data-rm="${i}" aria-label="Remove ${esc(r.food.name)}">×</button></div>
+      <div class="amount-row">
+        <input class="qty" type="number" inputmode="decimal" step="any" min="0" value="${r.qty}" aria-label="Amount">
+        <select class="unit" aria-label="Unit">${unitsFor(r.food)
+          .map((u) => `<option value="${u.key}" ${u.key === r.unitKey ? 'selected' : ''}>${esc(unitLabel(r.food, u.key))}</option>`)
+          .join('')}</select>
+      </div>
+      <div class="muted small numbers"></div></div>`;
+  }
+  return `<div class="review-item" data-i="${i}">
+    <div class="ri-head"><input class="name" value="${esc(r.name)}" aria-label="Name"><span class="badge">${
+      r.confidence === 'low' ? 'Rough guess' : r.confidence === 'high' ? 'Known values' : 'Estimate'
+    }</span><button class="rm" data-rm="${i}" aria-label="Remove ${esc(r.name)}">×</button></div>
+    <div class="amount-row">
+      <input class="qty" type="number" inputmode="decimal" step="any" min="0" value="${r.qty}" aria-label="How many">
+      <span class="unit-label">× ${esc(r.unit)}${r.unitGrams ? ` <span class="muted">· about ${fmt(r.unitGrams)} g each</span>` : ''}</span>
+    </div>
+    <div class="group-label">Per ${esc(r.unit)}</div>
+    <div class="four">
+      ${['kcal', 'protein', 'carbs', 'fat']
+        .map(
+          (k) =>
+            `<label class="field mini"><span>${{ kcal: 'kcal', protein: 'Protein', carbs: 'Carbs', fat: 'Fat' }[k]}</span><input data-k="${k}" type="number" inputmode="decimal" step="any" min="0" value="${r[k]}"></label>`,
+        )
+        .join('')}
+    </div>
+    <div class="muted small numbers"></div>
+    <label class="check"><input type="checkbox" class="save" ${r.save ? 'checked' : ''}> Save to My Foods</label></div>`;
+}
+
+const sumRows = (rows) =>
+  rows.reduce(
+    (t, r) => {
+      const n = rowNutrition(r);
+      return { kcal: t.kcal + n.kcal, protein: t.protein + n.protein, carbs: t.carbs + n.carbs, fat: t.fat + n.fat };
+    },
+    { kcal: 0, protein: 0, carbs: 0, fat: 0 },
+  );
+
+// Draws rows into `list` and keeps them in sync with what's typed. Calls onChange after every edit.
+function bindRows(list, rows, onChange) {
+  const refresh = () => {
+    $$('.review-item', list).forEach((el) => {
+      const r = rows[el.dataset.i];
+      $('.numbers', el).textContent = r.kind === 'food' || r.qty !== 1 ? `${r.kind === 'est' ? 'Total: ' : ''}${macroLine(rowNutrition(r))}` : '';
+    });
+    onChange();
+  };
+  const draw = () => {
+    list.innerHTML = rows.map(rowHtml).join('');
+    refresh();
+  };
+  const edit = (ev) => {
+    const el = ev.target.closest('.review-item');
+    if (!el) return;
+    const r = rows[el.dataset.i];
+    const t = ev.target;
+    if (t.classList.contains('qty')) r.qty = parseFloat(t.value) || 0;
+    else if (t.classList.contains('unit')) r.unitKey = t.value;
+    else if (t.classList.contains('name')) r.name = t.value;
+    else if (t.classList.contains('save')) r.save = t.checked;
+    else if (t.dataset.k) r[t.dataset.k] = parseFloat(t.value) || 0;
+    refresh();
+  };
+  list.addEventListener('input', edit);
+  list.addEventListener('change', edit);
+  list.addEventListener('click', (ev) => {
+    const rm = ev.target.closest('[data-rm]');
+    if (!rm) return;
+    rows.splice(Number(rm.dataset.rm), 1);
+    draw();
+  });
+  draw();
+}
+
 function reviewScreen(result, meal) {
   const rows = (result.items || []).map(toRow);
   // Restaurant dishes that were looked up are worth keeping, so next time needs no search.
@@ -1225,39 +1381,6 @@ function reviewScreen(result, meal) {
         body.innerHTML = `<p>Claude couldn't find any food in that. Go back and try describing it differently.</p>`;
         return;
       }
-      const rowHtml = (r, i) => {
-        if (r.kind === 'food') {
-          return `<div class="review-item" data-i="${i}">
-            <div class="ri-head"><strong>${esc(r.food.name)}</strong><span class="badge ok">My food</span><button class="rm" data-rm="${i}" aria-label="Remove">×</button></div>
-            <div class="amount-row">
-              <input class="qty" type="number" inputmode="decimal" step="any" min="0" value="${r.qty}" aria-label="Amount">
-              <select class="unit" aria-label="Unit">${unitsFor(r.food)
-                .map((u) => `<option value="${u.key}" ${u.key === r.unitKey ? 'selected' : ''}>${esc(unitLabel(r.food, u.key))}</option>`)
-                .join('')}</select>
-            </div>
-            <div class="muted small numbers"></div></div>`;
-        }
-        return `<div class="review-item" data-i="${i}">
-          <div class="ri-head"><input class="name" value="${esc(r.name)}" aria-label="Name"><span class="badge">${
-            r.confidence === 'low' ? 'Rough guess' : r.confidence === 'high' ? 'Known values' : 'Estimate'
-          }</span><button class="rm" data-rm="${i}" aria-label="Remove">×</button></div>
-          <div class="amount-row">
-            <input class="qty" type="number" inputmode="decimal" step="any" min="0" value="${r.qty}" aria-label="How many">
-            <span class="unit-label">× ${esc(r.unit)}${r.unitGrams ? ` <span class="muted">· about ${fmt(r.unitGrams)} g each</span>` : ''}</span>
-          </div>
-          <div class="group-label">Per ${esc(r.unit)}</div>
-          <div class="four">
-            ${['kcal', 'protein', 'carbs', 'fat']
-              .map(
-                (k) =>
-                  `<label class="field mini"><span>${{ kcal: 'kcal', protein: 'Protein', carbs: 'Carbs', fat: 'Fat' }[k]}</span><input data-k="${k}" type="number" inputmode="decimal" step="any" min="0" value="${r[k]}"></label>`,
-              )
-              .join('')}
-          </div>
-          <div class="muted small numbers"></div>
-          <label class="check"><input type="checkbox" class="save" ${r.save ? 'checked' : ''}> Save to My Foods</label></div>`;
-      };
-
       body.innerHTML = `
         ${result.note ? `<p class="note">${esc(result.note)}</p>` : ''}
         ${
@@ -1267,7 +1390,7 @@ function reviewScreen(result, meal) {
                 .join(' · ')}</p>`
             : ''
         }
-        <div class="review-list">${rows.map(rowHtml).join('')}</div>
+        <div class="review-list"></div>
         <div class="total"></div>
         <div class="combo-box">
           <label class="check"><input type="checkbox" class="combo" ${combo ? 'checked' : ''}> Save as a favorite, to log it in one tap next time</label>
@@ -1275,6 +1398,12 @@ function reviewScreen(result, meal) {
         </div>
         ${mealDateFields(meal)}
         <button class="btn primary cta add">Add to diary</button>`;
+
+      const update = () => {
+        $('.total', body).textContent = `Total: ${macroLine(sumRows(rows))}`;
+        $('.add', body).textContent = combo ? 'Add and save favorite' : `Add ${rows.length} item${rows.length === 1 ? '' : 's'}`;
+      };
+      bindRows($('.review-list', body), rows, update);
 
       const comboBox = $('.combo', body);
       const comboInput = $('.combo-name', body);
@@ -1286,62 +1415,8 @@ function reviewScreen(result, meal) {
       });
       comboInput.addEventListener('input', () => (comboName = comboInput.value));
 
-      const update = () => {
-        $$('.review-item', body).forEach((el) => {
-          const r = rows[el.dataset.i];
-          $('.numbers', el).textContent = r.kind === 'food' || r.qty !== 1 ? `${r.kind === 'est' ? 'Total: ' : ''}${macroLine(rowNutrition(r))}` : '';
-        });
-        const total = rows.reduce(
-          (t, r) => {
-            const n = rowNutrition(r);
-            return { kcal: t.kcal + n.kcal, protein: t.protein + n.protein, carbs: t.carbs + n.carbs, fat: t.fat + n.fat };
-          },
-          { kcal: 0, protein: 0, carbs: 0, fat: 0 },
-        );
-        $('.total', body).textContent = `Total: ${macroLine(total)}`;
-        $('.add', body).textContent = combo ? 'Add and save favorite' : `Add ${rows.length} item${rows.length === 1 ? '' : 's'}`;
-      };
-      update();
-
-      body.addEventListener('input', (ev) => {
-        const el = ev.target.closest('.review-item');
-        if (!el) return;
-        const r = rows[el.dataset.i];
-        if (ev.target.classList.contains('qty')) r.qty = parseFloat(ev.target.value) || 0;
-        else if (ev.target.classList.contains('name')) r.name = ev.target.value;
-        else if (ev.target.dataset.k) r[ev.target.dataset.k] = parseFloat(ev.target.value) || 0;
-        else if (ev.target.classList.contains('save')) r.save = ev.target.checked;
-        update();
-      });
-      body.addEventListener('change', (ev) => {
-        const el = ev.target.closest('.review-item');
-        if (!el) return;
-        const r = rows[el.dataset.i];
-        if (ev.target.classList.contains('unit')) r.unitKey = ev.target.value;
-        if (ev.target.classList.contains('save')) r.save = ev.target.checked;
-        update();
-      });
-      body.addEventListener('click', (ev) => {
-        const rm = ev.target.closest('[data-rm]');
-        if (!rm) return;
-        rows.splice(Number(rm.dataset.rm), 1);
-        showScreen();
-      });
-
-      const estFood = (r) =>
-        saveFood({
-          name: r.name || 'Food',
-          brand: '',
-          per: { label: `1 ${r.unit}`, grams: r.unitGrams || null },
-          kcal: Math.round(r.kcal),
-          protein: round1(r.protein),
-          carbs: round1(r.carbs),
-          fat: round1(r.fat),
-          packageGrams: null,
-          source: 'ai',
-        });
-
       $('.add', body).onclick = async () => {
+        if (!rows.some((r) => r.qty > 0)) return toast('Nothing to add');
         const mealSel = val(body, 'meal');
         const date = dateVal(body);
 
@@ -1349,27 +1424,8 @@ function reviewScreen(result, meal) {
           // Save the whole meal as one favorite and log it as a single entry.
           const name = comboName.trim();
           if (!name) return toast('Give your favorite a name');
-          const parts = rows
-            .filter((r) => r.qty > 0)
-            .map((r) =>
-              r.kind === 'food'
-                ? {
-                    name: r.food.name,
-                    amount: amountText(r.food, r.qty, r.unitKey),
-                    grams: gramsOf(r.food, r.qty, r.unitKey),
-                    ...scale(r.food, r.qty, r.unitKey),
-                    estimate: r.food.source === 'ai' || !!r.food.estimated,
-                  }
-                : {
-                    name: r.name || 'Food',
-                    amount: estAmount(r),
-                    grams: r.unitGrams ? r.unitGrams * r.qty : null,
-                    ...rowNutrition(r),
-                    estimate: r.confidence !== 'high',
-                  },
-            );
           for (const r of rows) if (r.kind === 'est' && r.save) await estFood(r);
-          const fav = await saveFavoriteMeal(name, parts);
+          const fav = await saveMealFood(name, rows);
           await addEntry({ ...foodEntry(fav, 1, 'per', mealSel), date });
           await touchFood(fav, 1, 'per');
           return afterLog(`${addedMsg(`"${name}"`, date)} and saved it to favorites`);
@@ -1401,6 +1457,83 @@ function reviewScreen(result, meal) {
   };
 }
 
+// ---------- Lego mode: build one meal from ingredients ----------
+// Ingredients come from any of the usual ways to add food (scan, label, describe, photo, quick add,
+// My Foods); each of those screens hands its result back here instead of logging it.
+
+// Close the screens opened on top of `screen` and show it again.
+function returnTo(screen) {
+  while (stack.length && stack.at(-1) !== screen) stack.pop().leave?.();
+  showScreen();
+}
+
+// food: a meal to edit (otherwise a new build). entry: the diary entry it was opened from, if any.
+function builderScreen(meal, { food = null, entry = null } = {}) {
+  const rows = food ? food.ingredients.map(partToRow) : [];
+  let name = food?.name ?? '';
+  let favorite = food?.favorite ?? false;
+  const self = {
+    title: food ? 'Edit meal' : 'Lego mode',
+    render(body) {
+      body.innerHTML = `
+        ${textField('mealName', 'Meal name', name, 'placeholder="e.g. Homemade burger" autocomplete="off"')}
+        <div class="group-label">Ingredients</div>
+        <p class="muted small empty card-ish build-hint">Add each part of the meal: scan the buns, scan the cheese, describe the sauce… They're added up into one item.</p>
+        <div class="review-list"></div>
+        <button class="btn secondary add-part">${ICONS.plus}<span>Add ingredient</span></button>
+        <div class="total"></div>
+        <div class="combo-box"><label class="check"><input type="checkbox" class="fav" ${favorite ? 'checked' : ''}> Save to Favorites</label></div>
+        ${food ? '' : mealDateFields(meal)}
+        <button class="btn primary cta build-save">${food ? 'Save meal' : 'Add to diary'}</button>`;
+
+      bindRows($('.review-list', body), rows, () => {
+        $('.build-hint', body).hidden = rows.length > 0;
+        $('.total', body).textContent = rows.length ? `Total: ${macroLine(sumRows(rows))}` : '';
+      });
+      $('[name="mealName"]', body).addEventListener('input', (e) => (name = e.target.value));
+      $('.fav', body).addEventListener('change', (e) => (favorite = e.target.checked));
+
+      const pick = (newRows) => {
+        rows.push(...newRows);
+        returnTo(self);
+        toast(`Added ${newRows.map((r) => (r.kind === 'food' ? r.food.name : r.name)).join(', ')}`);
+      };
+      $('.add-part', body).onclick = () => push(addMenu(meal, pick));
+
+      // (Not ".save": ingredient cards have "Save to My Foods" boxes with that class.)
+      $('.build-save', body).onclick = async () => {
+        if (!name.trim()) {
+          $('[name="mealName"]', body).focus();
+          return toast('Give the meal a name');
+        }
+        if (!rows.some((r) => r.qty > 0)) return toast('Add at least one ingredient');
+        for (const [i, r] of rows.entries()) {
+          // Estimates ticked "Save to My Foods" become real foods, and the meal points at them.
+          if (r.kind === 'est' && r.save) rows[i] = { kind: 'food', food: await estFood(r), qty: r.qty, unitKey: 'per' };
+        }
+        const saved = await saveMealFood(name.trim(), rows, { favorite, food: food ?? {} });
+
+        if (!food) {
+          const date = dateVal(body);
+          await addEntry({ ...foodEntry(saved, 1, 'per', val(body, 'meal')), date });
+          await touchFood(saved, 1, 'per');
+          return afterLog(addedMsg(`"${saved.name}"`, date));
+        }
+        if (entry) {
+          // Update the diary entry this was opened from, keeping its amount, meal and day.
+          const unitKey = unitsFor(saved).some((u) => u.key === entry.unitKey) ? entry.unitKey : 'per';
+          const qty = unitKey === entry.unitKey ? entry.qty : 1;
+          await db.put('entries', { ...entry, ...foodEntry(saved, qty, unitKey, entry.meal), date: entry.date });
+          return afterLog('Meal updated');
+        }
+        toast('Meal saved');
+        back();
+      };
+    },
+  };
+  return self;
+}
+
 // ---------- Quick add & plain entry editing ----------
 
 function nutritionFields(e = {}) {
@@ -1415,18 +1548,22 @@ const readNutrition = (body) => ({
   fat: round1(numVal(body, 'fat')),
 });
 
-function quickAddScreen(meal) {
+function quickAddScreen(meal, pick = null) {
   return {
     title: 'Quick add',
     render(body) {
       body.innerHTML = `
-        ${textField('name', 'Name (optional)', '', 'placeholder="Quick add" autocomplete="off"')}
+        ${textField('name', 'Name (optional)', '', `placeholder="${pick ? 'e.g. Burger sauce' : 'Quick add'}" autocomplete="off"`)}
         ${nutritionFields()}
-        ${mealDateFields(meal)}
-        <button class="btn primary cta save">Add</button>`;
+        ${pick ? '' : mealDateFields(meal)}
+        <button class="btn primary cta save">${pick ? 'Add to meal' : 'Add'}</button>`;
       $('[name="kcal"]', body).focus();
       $('.save', body).onclick = async () => {
         if (val(body, 'kcal') === '') return toast('Enter the calories');
+        if (pick) {
+          const n = readNutrition(body);
+          return pick([{ kind: 'est', name: val(body, 'name') || 'Extra', qty: 1, unit: 'portion', unitGrams: 0, ...n, confidence: 'high', save: false }]);
+        }
         const date = dateVal(body);
         await addEntry({ meal: val(body, 'meal'), date, name: val(body, 'name') || 'Quick add', amount: '', ...readNutrition(body) });
         afterLog(addedMsg('it', date));
