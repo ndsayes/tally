@@ -39,6 +39,10 @@ const ICONS = {
   chat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H10l-5 4v-4H4z"/></svg>',
   camera: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
   calendar: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>',
+  back: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>',
+  forward: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>',
+  close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
 };
 
 const numField = (name, label, value, attrs = '') =>
@@ -180,6 +184,7 @@ async function showView(view) {
   state.view = view;
   $('#dashBar').hidden = $('#dashboard').hidden = view !== 'dashboard';
   $('#diaryBar').hidden = $('#today').hidden = view !== 'diary';
+  $$('.tab').forEach((t) => (t.dataset.view === view ? t.setAttribute('aria-current', 'page') : t.removeAttribute('aria-current')));
   if (view === 'dashboard') state.date = todayStr(); // logging from the dashboard goes to today
   window.scrollTo(0, 0);
   await refreshToday();
@@ -379,8 +384,8 @@ async function renderDashboard() {
 
     <section class="card today-card">
       <div class="card-head">
-        <h3 class="card-title">Today</h3>
-        <button class="circle-add" data-act="open-today" aria-label="Log food">+</button>
+        <button class="card-link" data-act="open-today" aria-label="Open today's diary"><h3 class="card-title">Today</h3><span class="chev" aria-hidden="true">›</span></button>
+        <button class="circle-add" data-act="add-food" aria-label="Add food">${ICONS.plus}</button>
       </div>
       ${summaryHtml(sumEntries(state.entries), g)}
     </section>
@@ -400,6 +405,7 @@ $('#dashboard').addEventListener('click', (ev) => {
   const day = ev.target.closest('[data-day]');
   if (day) return openDay(day.dataset.day);
   if (ev.target.closest('[data-act="open-today"]')) return openDay(todayStr());
+  if (ev.target.closest('[data-act="add-food"]')) return openSheet(addMenu(mealForNow()));
   if (ev.target.closest('[data-act="calendar"]')) return openSheet(calendarScreen());
   if (ev.target.closest('[data-act="settings"]')) openSheet(settingsScreen());
 });
@@ -442,9 +448,9 @@ function calendarScreen() {
 
       body.innerHTML = `
         <div class="cal-head">
-          <button class="icon-btn cal-prev" aria-label="Previous month">‹</button>
+          <button class="icon-btn cal-prev" aria-label="Previous month">${ICONS.back}</button>
           <h3>${month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</h3>
-          <button class="icon-btn cal-next" aria-label="Next month" ${month >= thisMonth ? 'disabled' : ''}>›</button>
+          <button class="icon-btn cal-next" aria-label="Next month" ${month >= thisMonth ? 'disabled' : ''}>${ICONS.forward}</button>
         </div>
         <div class="cal-grid">
           ${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((w) => `<span class="cal-dow">${w}</span>`).join('')}
@@ -476,7 +482,8 @@ $('#dashboard').addEventListener('change', (ev) => {
   writePref('tally-range', state.range);
   renderDashboard();
 });
-$('#toWeek').onclick = () => showView('dashboard');
+// Tab bar. Tapping Diary always lands on today, like tapping an iOS tab returns to its first screen.
+$$('.tab').forEach((t) => (t.onclick = () => (t.dataset.view === 'dashboard' ? showView('dashboard') : openDay(todayStr()))));
 
 $('#today').addEventListener('click', (ev) => {
   const add = ev.target.closest('[data-add]');
@@ -521,7 +528,9 @@ const isTop = (screen) => stack.at(-1) === screen;
 function showScreen() {
   const s = stack.at(-1);
   $('#sheetTitle').textContent = s.title;
-  $('#sheetBack').textContent = stack.length > 1 ? '‹ Back' : 'Close';
+  const backBtn = $('#sheetBack');
+  backBtn.innerHTML = stack.length > 1 ? ICONS.back : ICONS.close;
+  backBtn.setAttribute('aria-label', stack.length > 1 ? 'Back' : 'Close');
   // A fresh container per render, so each screen's event listeners go away with it.
   const body = document.createElement('div');
   sheetBody.replaceChildren(body);
@@ -594,6 +603,35 @@ async function setupUpdates() {
 const checkForUpdate = () => swRegistration?.update().catch(() => {});
 
 $('#sheetBack').onclick = back;
+
+// Swipe down on the top of a sheet to close it, as on any iOS sheet.
+{
+  const panel = $('.sheet-panel');
+  const head = $('.sheet-head');
+  let startY = null;
+  const reset = () => {
+    startY = null;
+    panel.classList.remove('dragging');
+  };
+  head.addEventListener('touchstart', (e) => {
+    startY = e.touches[0].clientY;
+    panel.classList.add('dragging');
+  }, { passive: true });
+  head.addEventListener('touchmove', (e) => {
+    if (startY !== null) panel.style.transform = `translateY(${Math.max(0, e.touches[0].clientY - startY)}px)`;
+  }, { passive: true });
+  head.addEventListener('touchend', (e) => {
+    if (startY === null) return;
+    const dy = e.changedTouches[0].clientY - startY;
+    reset();
+    if (dy > 110) closeSheet(); // slides on down from where the finger let go
+    panel.style.transform = '';
+  });
+  head.addEventListener('touchcancel', () => {
+    reset();
+    panel.style.transform = '';
+  });
+}
 sheetEl.addEventListener('click', (ev) => {
   if (ev.target === sheetEl) closeSheet();
 });
@@ -616,18 +654,22 @@ function addMenu(meal) {
   const self = {
     title: `Add to ${MEAL_NAMES[meal]}`,
     render(body) {
+      // Search comes first: most logging is re-logging something you've had before.
       body.innerHTML = `
-        <div class="tiles">
-          ${tile('scan', ICONS.barcode, 'Scan barcode')}
-          ${tile('label', ICONS.label, 'Snap a label')}
-          ${tile('describe', ICONS.chat, 'Describe it')}
-          ${tile('photo', ICONS.camera, 'Photo of meal')}
+        <input type="search" class="search" placeholder="Search my foods" autocomplete="off" enterkeyhint="search" value="${esc(query)}" aria-label="Search my foods">
+        <div class="capture">
+          <div class="tiles">
+            ${tile('scan', ICONS.barcode, 'Scan barcode')}
+            ${tile('label', ICONS.label, 'Snap a label')}
+            ${tile('describe', ICONS.chat, 'Describe it')}
+            ${tile('photo', ICONS.camera, 'Photo of meal')}
+          </div>
+          <button class="row-link" data-act="quick"><span>Quick add calories</span><span aria-hidden="true">›</span></button>
         </div>
-        <button class="row-link" data-act="quick"><span>Quick add calories</span><span>›</span></button>
-        <input type="search" class="search" placeholder="Search my foods" autocomplete="off" enterkeyhint="search" value="${esc(query)}">
         <div class="lists"></div>`;
 
       const lists = $('.lists', body);
+      const capture = $('.capture', body);
       const rows = (foods) =>
         `<div class="food-list">${foods
           .map(
@@ -639,6 +681,7 @@ function addMenu(meal) {
       const draw = () => {
         const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
         const recent = (a, b) => (b.lastUsed || b.createdAt || 0) - (a.lastUsed || a.createdAt || 0);
+        capture.hidden = tokens.length > 0; // while searching, show only results
         if (tokens.length) {
           const found = state.foods
             .filter((f) => tokens.every((t) => `${f.name} ${f.brand || ''}`.toLowerCase().includes(t)))
@@ -739,7 +782,7 @@ function amountScreen(food, meal, entry = null) {
         }
         <div class="preview"></div>
         ${mealDateFields(meal, entry?.date)}
-        <button class="btn primary save">${entry ? 'Save' : 'Add'}</button>
+        <button class="btn primary cta save">${entry ? 'Save' : 'Add'}</button>
         ${entry ? '<button class="btn danger-outline del">Delete entry</button>' : ''}
         <button class="link fav-toggle"></button>
         <button class="link edit-food">Edit food details</button>`;
@@ -820,7 +863,7 @@ function foodEditor(food, { title = 'Food details', note = '', onSaved, onDelete
           ${numField('packageGrams', 'Whole package weight in g (optional)', food.packageGrams ?? '')}
           ${textField('barcode', 'Barcode (optional)', food.barcode ?? '', 'inputmode="numeric" autocomplete="off"')}
           <p class="muted small">Add the weight to log in grams, and the package weight to log "half the package".</p>
-          <button class="btn primary" type="submit">Save food</button>
+          <button class="btn primary cta" type="submit">Save food</button>
         </form>
         ${food.id && onDeleted ? '<button class="btn danger-outline del">Delete this food</button>' : ''}`;
 
@@ -1003,7 +1046,7 @@ function labelScreen(meal, { barcode = '', hint = '' } = {}) {
         <div class="thumbs"></div>
         <label class="btn secondary file-btn">${ICONS.camera}<span>Add photo</span><input type="file" accept="image/*" hidden></label>
         ${textField('hint', 'What is it? (optional)', hint, 'placeholder="e.g. Costco bulgogi with jasmine rice" autocomplete="off"')}
-        <button class="btn primary go">Read label</button>
+        <button class="btn primary cta go">Read label</button>
         <p class="status small"></p>`;
       const go = $('.go', body);
       $('[name="hint"]', body).addEventListener('input', (e) => (hint = e.target.value));
@@ -1054,7 +1097,7 @@ function describeScreen(meal) {
       body.innerHTML = `
         <textarea class="big-input" rows="4" placeholder="e.g. 200 g Costco bulgogi with jasmine rice, and a can of Coke Zero">${esc(text)}</textarea>
         <p class="muted small">Tip: tap the microphone on your keyboard to say it. Amounts help: "200 g", "half the tray", "2 slices".</p>
-        <button class="btn primary go">Work it out</button>
+        <button class="btn primary cta go">Work it out</button>
         <p class="status small"></p>`;
       const ta = $('textarea', body);
       ta.addEventListener('input', () => (text = ta.value));
@@ -1094,7 +1137,7 @@ function photoScreen(meal) {
         <div class="thumbs"></div>
         <label class="btn secondary file-btn">${ICONS.camera}<span>Take or choose photo</span><input type="file" accept="image/*" hidden></label>
         <textarea class="big-input" rows="2" placeholder="Optional note, e.g. about 250 g of rice, cooked in butter">${esc(note)}</textarea>
-        <button class="btn primary go">Estimate</button>
+        <button class="btn primary cta go">Estimate</button>
         <p class="status small"></p>`;
       const go = $('.go', body);
       const ta = $('textarea', body);
@@ -1231,7 +1274,7 @@ function reviewScreen(result, meal) {
           <input class="combo-name" type="text" autocomplete="off" placeholder="Name it, e.g. Post-workout shake" value="${esc(comboName)}" ${combo ? '' : 'hidden'}>
         </div>
         ${mealDateFields(meal)}
-        <button class="btn primary add">Add to diary</button>`;
+        <button class="btn primary cta add">Add to diary</button>`;
 
       const comboBox = $('.combo', body);
       const comboInput = $('.combo-name', body);
@@ -1380,7 +1423,7 @@ function quickAddScreen(meal) {
         ${textField('name', 'Name (optional)', '', 'placeholder="Quick add" autocomplete="off"')}
         ${nutritionFields()}
         ${mealDateFields(meal)}
-        <button class="btn primary save">Add</button>`;
+        <button class="btn primary cta save">Add</button>`;
       $('[name="kcal"]', body).focus();
       $('.save', body).onclick = async () => {
         if (val(body, 'kcal') === '') return toast('Enter the calories');
@@ -1401,7 +1444,7 @@ function entryEditor(entry) {
         ${textField('amount', 'Amount (note)', entry.amount, 'autocomplete="off"')}
         ${nutritionFields(entry)}
         ${mealDateFields(entry.meal, entry.date)}
-        <button class="btn primary save">Save</button>
+        <button class="btn primary cta save">Save</button>
         <button class="btn danger-outline del">Delete entry</button>`;
       $('.save', body).onclick = async () => {
         const date = dateVal(body);
@@ -1588,8 +1631,6 @@ function settingsScreen() {
         <p class="status small"></p>
         <label class="field"><span>Home city (helps find restaurants you mention)</span><input name="home" type="text" autocomplete="off" placeholder="e.g. Toronto, Ontario" value="${esc(s.home || '')}"></label>
 
-        <button class="btn primary save">Save settings</button>
-
         <h4 class="section-label">Appearance</h4>
         <div class="segmented" role="group" aria-label="Appearance">${Object.entries(THEMES)
           .map(([k, v]) => `<button data-theme="${k}" aria-pressed="${k === currentTheme()}">${v}</button>`)
@@ -1615,12 +1656,36 @@ function settingsScreen() {
       check();
       body.addEventListener('input', check);
 
+      // Changes save as you make them, like the iPhone Settings app (no Save button to forget).
+      const persist = async () => {
+        const kcal = numVal(body, 'kcal');
+        if (kcal > 0) {
+          s.goals = {
+            kcal: Math.round(kcal),
+            protein: Math.round(numVal(body, 'protein')),
+            carbs: Math.round(numVal(body, 'carbs')),
+            fat: Math.round(numVal(body, 'fat')),
+          };
+          s.goalsSet = true;
+        }
+        s.apiKey = val(body, 'apiKey');
+        s.model = val(body, 'model');
+        s.home = val(body, 'home');
+        await saveSettings();
+        render();
+      };
+      $$('[name="kcal"], [name="protein"], [name="carbs"], [name="fat"], [name="apiKey"], [name="home"]', body).forEach((el) =>
+        el.addEventListener('input', persist),
+      );
+      $('[name="model"]', body).addEventListener('change', persist);
+
       $('.split', body).onclick = () => {
         const kcal = numVal(body, 'kcal');
         $('[name="protein"]', body).value = Math.round((kcal * 0.3) / 4);
         $('[name="carbs"]', body).value = Math.round((kcal * 0.4) / 4);
         $('[name="fat"]', body).value = Math.round((kcal * 0.3) / 9);
         check();
+        persist();
       };
 
       $('.test', body).onclick = async (ev) => {
@@ -1634,24 +1699,6 @@ function settingsScreen() {
         } catch (err) {
           showError(body, err);
         }
-      };
-
-      $('.save', body).onclick = async () => {
-        if (!(numVal(body, 'kcal') > 0)) return toast('Enter a calorie target');
-        s.goals = {
-          kcal: Math.round(numVal(body, 'kcal')),
-          protein: Math.round(numVal(body, 'protein')),
-          carbs: Math.round(numVal(body, 'carbs')),
-          fat: Math.round(numVal(body, 'fat')),
-        };
-        s.apiKey = val(body, 'apiKey');
-        s.model = val(body, 'model');
-        s.home = val(body, 'home');
-        s.goalsSet = true;
-        await saveSettings();
-        render();
-        toast('Settings saved');
-        back();
       };
 
       bindCloudSection(body, self);
